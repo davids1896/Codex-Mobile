@@ -1,0 +1,12 @@
+{
+  "name": "codex-mobile-pwa",
+  "version": "0.2.0",
+  "description": "Tailnet-only mobile PWA gateway for a local Codex CLI",
+  "license": "MIT",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node server.mjs",
+    "check": "node --check server.mjs && node --check public/app.js && node --check public/sw.js"
+  }
+}

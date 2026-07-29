@@ -1,0 +1,14 @@
+gateway/config.json
+gateway/runtime.json
+data/
+uploads/
+*.log
+*.pid
+pairing-code.txt
+cookie-secret.txt
+auth.json
+config.toml
+cc-switch-model-catalog.json
+node_modules/
+.DS_Store
+Thumbs.db

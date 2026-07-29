@@ -1,0 +1,7 @@
+{
+  "port": 8787,
+  "workspace": "/absolute/path/to/your/workspace",
+  "codexPath": "/absolute/path/to/codex",
+  "maxUploadBytes": 26214400,
+  "maxAttachments": 8
+}

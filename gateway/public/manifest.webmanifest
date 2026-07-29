@@ -1,0 +1,23 @@
+{
+  "name": "Codex Mobile",
+  "short_name": "Codex",
+  "description": "Private mobile control for a local Codex workspace",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#121613",
+  "theme_color": "#121613",
+  "icons": [
+    {
+      "src": "/icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}

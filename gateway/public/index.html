@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <meta name="theme-color" content="#121613">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="Codex Mobile">
+    <link rel="manifest" href="/manifest.webmanifest">
+    <link rel="apple-touch-icon" href="/icons/icon-192.png">
+    <link rel="stylesheet" href="/app.css?v=6">
+    <title>Codex Mobile</title>
+  </head>
+  <body>
+    <section id="login" class="login" hidden>
+      <img src="/icons/icon-192.png" alt="" width="72" height="72">
+      <h1>Codex Mobile</h1>
+      <form id="login-form">
+        <label for="pairing-code">配对码</label>
+        <input id="pairing-code" name="code" autocomplete="one-time-code" required>
+        <button type="submit">连接电脑</button>
+        <p id="login-error" class="error"></p>
+      </form>
+    </section>
+
+    <div id="app" class="app" hidden>
+      <header class="app-header">
+        <div class="topbar">
+          <button id="threads-button" class="icon-button" title="历史任务" aria-label="历史任务">
+            <span class="menu-icon"></span>
+          </button>
+          <div class="heading">
+            <div><span id="status-dot" class="status-dot"></span><strong>Codex Mobile</strong></div>
+            <small id="thread-title">新任务</small>
+          </div>
+          <button id="new-button" class="icon-button" title="新建任务" aria-label="新建任务">+</button>
+        </div>
+        <div class="permission-switch" role="group" aria-label="访问权限">
+          <button type="button" data-permission="workspace">工作区</button>
+          <button type="button" data-permission="full">完全访问</button>
+        </div>
+      </header>
+
+      <main id="messages" aria-live="polite"></main>
+
+      <aside id="approval" class="approval" hidden></aside>
+
+      <form id="composer" class="composer">
+        <div id="attachment-list" class="attachment-list" hidden></div>
+        <div class="composer-row">
+          <input id="file-input" type="file" multiple hidden>
+          <button id="attach-button" class="icon-button attach" type="button" title="添加图片或附件" aria-label="添加图片或附件">+</button>
+          <textarea id="message" rows="1" placeholder="给 Codex 下达任务" enterkeyhint="send"></textarea>
+          <button id="stop-button" class="icon-button stop" type="button" title="停止" aria-label="停止" hidden>
+            <span></span>
+          </button>
+          <button id="send-button" class="icon-button send" type="submit" title="发送" aria-label="发送">
+            <span aria-hidden="true">&#8593;</span>
+          </button>
+        </div>
+        <div id="upload-status" class="upload-status" aria-live="polite"></div>
+      </form>
+    </div>
+
+    <dialog id="threads-dialog">
+      <div class="dialog-header">
+        <strong>历史任务</strong>
+        <button id="close-threads" class="icon-button" aria-label="关闭">&times;</button>
+      </div>
+      <div id="threads-list" class="threads-list"></div>
+    </dialog>
+
+    <script type="module" src="/app.js?v=6"></script>
+  </body>
+</html>
