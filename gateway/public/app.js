@@ -16,6 +16,10 @@ const threadTitle = document.querySelector("#thread-title");
 const approval = document.querySelector("#approval");
 const dialog = document.querySelector("#threads-dialog");
 const threadsList = document.querySelector("#threads-list");
+const hostSelect = document.querySelector("#host-select");
+const workspaceSelect = document.querySelector("#workspace-select");
+const loginHostControl = document.querySelector("#login-host-control");
+const loginHostSelect = document.querySelector("#login-host");
 const permissionButtons = [...document.querySelectorAll("[data-permission]")];
 
 let maxAttachments = 8;
@@ -24,6 +28,7 @@ let state = null;
 let events = null;
 let selectedFiles = [];
 let uploading = false;
+let publicConfig = null;
 
 async function api(path, options = {}) {
   const headers = { ...(options.headers || {}) };
@@ -49,6 +54,52 @@ function formatSize(bytes) {
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
 
+function fillSelect(select, entries, selectedId, label) {
+  const previous = select.value;
+  select.replaceChildren(...entries.map((entry) => {
+    const option = document.createElement("option");
+    option.value = entry.id;
+    option.textContent = entry.name || entry.id;
+    option.title = entry.path || entry.url || "";
+    if (label === "host" && !entry.url && entry.id !== selectedId) option.disabled = true;
+    return option;
+  }));
+  select.value = selectedId || previous;
+}
+
+function renderHosts(host, hosts = []) {
+  if (!host || !hosts.length) return;
+  fillSelect(hostSelect, hosts, host.id, "host");
+  fillSelect(loginHostSelect, hosts, host.id, "host");
+  loginHostControl.hidden = hosts.length < 2;
+}
+
+function renderWorkspaces() {
+  const workspaces = state?.workspaces || [];
+  if (!workspaces.length) return;
+  fillSelect(workspaceSelect, workspaces, state.workspaceId, "workspace");
+}
+
+function navigateToHost(select) {
+  const config = state || publicConfig;
+  const currentHost = config?.host;
+  const target = config?.hosts?.find((entry) => entry.id === select.value);
+  if (!target || target.id === currentHost?.id) {
+    select.value = currentHost?.id || "";
+    return;
+  }
+  if (!target.url) {
+    alert("这台主机尚未配置可访问的 Tailnet HTTPS 地址");
+    select.value = currentHost?.id || "";
+    return;
+  }
+  if (state?.busy && !confirm("当前任务仍在运行。切换主机后任务会继续在原主机运行，确定离开吗？")) {
+    select.value = currentHost?.id || "";
+    return;
+  }
+  window.location.assign(target.url);
+}
+
 function renderMessageAttachments(items = []) {
   if (!items.length) return "";
   return `<div class="message-attachments">${items.map((item) => {
@@ -67,13 +118,18 @@ function render() {
   input.disabled = state.busy || uploading;
   sendButton.disabled = state.busy || uploading;
   attachButton.disabled = state.busy || uploading;
+  workspaceSelect.disabled =
+    state.busy || uploading || Boolean(state.pendingActions?.length);
+  hostSelect.disabled = uploading;
+  renderHosts(state.host, state.hosts);
+  renderWorkspaces();
   permissionButtons.forEach((button) => {
     button.classList.toggle("active", button.dataset.permission === state.permissionMode);
     button.disabled = state.busy || uploading;
   });
 
   if (!state.messages.length) {
-    messages.innerHTML = `<div class="empty">已连接到 ${escapeHtml(state.workspace)}<br>可以发送文字、图片或文件</div>`;
+    messages.innerHTML = `<div class="empty">已连接到 ${escapeHtml(state.workspaceName || state.workspace)}<br>${escapeHtml(state.workspace)}<br>可以发送文字、图片或文件</div>`;
   } else {
     messages.innerHTML = state.messages.map((message) => {
       const output = message.output ? `<pre>${escapeHtml(message.output)}</pre>` : "";
@@ -198,6 +254,12 @@ function connectEvents() {
 }
 
 async function boot() {
+  try {
+    publicConfig = await api("/api/public-config");
+    renderHosts(publicConfig.host, publicConfig.hosts);
+  } catch {
+    publicConfig = null;
+  }
   try {
     state = await api("/api/state");
     maxAttachments = state.limits?.maxAttachments || maxAttachments;
@@ -326,6 +388,38 @@ permissionButtons.forEach((button) => {
       alert(error.message);
     }
   };
+});
+
+hostSelect.addEventListener("change", () => navigateToHost(hostSelect));
+loginHostSelect.addEventListener("change", () => navigateToHost(loginHostSelect));
+workspaceSelect.addEventListener("change", async () => {
+  const workspaceId = workspaceSelect.value;
+  if (!state || workspaceId === state.workspaceId) return;
+  const target = state.workspaces?.find((entry) => entry.id === workspaceId);
+  const warning = selectedFiles.length
+    ? "切换目录会清空当前任务和已选择但尚未发送的附件。确定继续吗？"
+    : "切换目录会清空当前任务，并回到工作区权限。确定继续吗？";
+  if (!confirm(warning)) {
+    workspaceSelect.value = state.workspaceId;
+    return;
+  }
+  try {
+    state = await api("/api/workspace", {
+      method: "POST",
+      body: JSON.stringify({ workspaceId }),
+    });
+    selectedFiles.forEach((entry) => {
+      if (entry.previewUrl) URL.revokeObjectURL(entry.previewUrl);
+    });
+    selectedFiles = [];
+    renderSelectedFiles();
+    uploadStatus.textContent = "";
+    render();
+    input.focus();
+  } catch (error) {
+    workspaceSelect.value = state.workspaceId;
+    alert(`无法切换到 ${target?.name || workspaceId}：${error.message}`);
+  }
 });
 
 stopButton.onclick = () => api("/api/interrupt", { method: "POST", body: "{}" });

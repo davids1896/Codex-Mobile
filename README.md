@@ -12,6 +12,8 @@
 - 实时显示回复、命令执行和文件变更
 - 在手机端处理命令审批与问题输入
 - 每条消息默认上传 8 个、单个最大 25 MB 的图片或附件
+- 在配置白名单内切换多个工作目录，最近选择会在 Gateway 重启后恢复
+- 在同一个网页界面中切换多台独立主机
 - 工作区模式与完全访问模式切换
 - 配对码登录、30 天签名会话
 - Windows 计划任务与 Linux systemd user service 自启动
@@ -24,12 +26,15 @@ flowchart LR
     P["手机 Safari / PWA"] -->|"Tailnet HTTPS"| T["Tailscale Serve"]
     T -->|"127.0.0.1:8787"| G["Node.js Gateway"]
     G -->|"JSON-RPC over stdio"| C["Codex app-server"]
-    C --> W["固定工作区"]
+    C --> W["白名单工作区"]
     C --> A["主机上的 API Key / provider 配置"]
 ```
 
 API Key、`auth.json`、自定义 provider 配置和模型目录始终留在主机。手机只持有
 Tailnet 身份与网关会话 Cookie。
+
+多主机使用联邦式部署：每台主机运行自己的 Gateway 和 Codex，网页选择主机时跳转到该主机的
+Tailnet HTTPS 地址。各主机的 API Key、配对码、Cookie、附件和任务数据互不转发。
 
 ## 快速安装
 
@@ -56,6 +61,9 @@ Set-ExecutionPolicy -Scope Process Bypass -Force
 安装器会启动网关、配置自启动、调用 `tailscale serve --bg`，并输出手机首次登录
 所需的配对码。然后在手机 Tailscale 中连接同一 Tailnet，打开安装器显示的 HTTPS
 地址，并将页面添加到主屏幕。
+
+安装后编辑私有 `config.json` 即可增加 `workspaces` 与 `hosts`。完整格式和多主机同步步骤见
+[详细部署教程](docs/DEPLOYMENT.zh-CN.md#6-配置多个工作目录与主机)。
 
 ## 文档
 

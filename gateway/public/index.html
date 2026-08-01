@@ -9,13 +9,17 @@
     <meta name="apple-mobile-web-app-title" content="Codex Mobile">
     <link rel="manifest" href="/manifest.webmanifest">
     <link rel="apple-touch-icon" href="/icons/icon-192.png">
-    <link rel="stylesheet" href="/app.css?v=6">
+    <link rel="stylesheet" href="/app.css?v=7">
     <title>Codex Mobile</title>
   </head>
   <body>
     <section id="login" class="login" hidden>
       <img src="/icons/icon-192.png" alt="" width="72" height="72">
       <h1>Codex Mobile</h1>
+      <label id="login-host-control" class="login-host-control" for="login-host" hidden>
+        <span>主机</span>
+        <select id="login-host"></select>
+      </label>
       <form id="login-form">
         <label for="pairing-code">配对码</label>
         <input id="pairing-code" name="code" autocomplete="one-time-code" required>
@@ -35,6 +39,16 @@
             <small id="thread-title">新任务</small>
           </div>
           <button id="new-button" class="icon-button" title="新建任务" aria-label="新建任务">+</button>
+        </div>
+        <div class="connection-controls">
+          <label class="select-control" for="host-select">
+            <span>主机</span>
+            <select id="host-select" aria-label="切换主机"></select>
+          </label>
+          <label class="select-control" for="workspace-select">
+            <span>目录</span>
+            <select id="workspace-select" aria-label="切换工作目录"></select>
+          </label>
         </div>
         <div class="permission-switch" role="group" aria-label="访问权限">
           <button type="button" data-permission="workspace">工作区</button>
@@ -71,6 +85,6 @@
       <div id="threads-list" class="threads-list"></div>
     </dialog>
 
-    <script type="module" src="/app.js?v=6"></script>
+    <script type="module" src="/app.js?v=7"></script>
   </body>
 </html>

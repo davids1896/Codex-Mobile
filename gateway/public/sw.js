@@ -1,8 +1,8 @@
-const CACHE = "codex-mobile-v6";
+const CACHE = "codex-mobile-v7";
 const ASSETS = [
   "/",
-  "/app.css?v=6",
-  "/app.js?v=6",
+  "/app.css?v=7",
+  "/app.js?v=7",
   "/manifest.webmanifest",
   "/icons/icon-192.png",
   "/icons/icon-512.png",

@@ -1,6 +1,35 @@
 {
   "port": 8787,
   "workspace": "/absolute/path/to/your/workspace",
+  "workspaces": [
+    {
+      "id": "project",
+      "name": "Main project",
+      "path": "/absolute/path/to/your/workspace"
+    },
+    {
+      "id": "home",
+      "name": "Home",
+      "path": "/home/your-user"
+    }
+  ],
+  "host": {
+    "id": "this-host",
+    "name": "This host",
+    "url": "https://this-host.your-tailnet.ts.net"
+  },
+  "hosts": [
+    {
+      "id": "this-host",
+      "name": "This host",
+      "url": "https://this-host.your-tailnet.ts.net"
+    },
+    {
+      "id": "other-host",
+      "name": "Other host",
+      "url": "https://other-host.your-tailnet.ts.net"
+    }
+  ],
   "codexPath": "/absolute/path/to/codex",
   "maxUploadBytes": 26214400,
   "maxAttachments": 8

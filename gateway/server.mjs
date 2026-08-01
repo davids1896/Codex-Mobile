@@ -10,7 +10,7 @@ import {
   statSync,
   writeFileSync,
 } from "node:fs";
-import { homedir } from "node:os";
+import { homedir, hostname } from "node:os";
 import { basename, extname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import readline from "node:readline";
@@ -19,12 +19,106 @@ const root = fileURLToPath(new URL(".", import.meta.url));
 const publicDir = join(root, "public");
 const configPath = process.env.CODEX_MOBILE_CONFIG || join(root, "config.json");
 const config = JSON.parse(readFileSync(configPath, "utf8").replace(/^\uFEFF/, ""));
-if (!config.workspace || !isAbsolute(config.workspace)) {
-  throw new Error(`config.workspace must be an absolute path (${configPath})`);
+
+function normalizedId(value, fallback) {
+  const id = String(value || fallback).trim();
+  if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$/.test(id)) {
+    throw new Error(`Invalid id "${id}" in ${configPath}`);
+  }
+  return id;
 }
-if (!existsSync(config.workspace)) {
-  throw new Error(`Configured workspace does not exist: ${config.workspace}`);
+
+function normalizeWorkspaces() {
+  const entries =
+    Array.isArray(config.workspaces) && config.workspaces.length
+      ? config.workspaces
+      : config.workspace
+        ? [{
+            id: "default",
+            name: config.workspaceName || basename(config.workspace),
+            path: config.workspace,
+          }]
+        : [];
+  if (!entries.length) {
+    throw new Error(`config.workspace or config.workspaces is required (${configPath})`);
+  }
+
+  const ids = new Set();
+  return entries.map((entry, index) => {
+    const id = normalizedId(entry?.id, `workspace-${index + 1}`);
+    if (ids.has(id)) throw new Error(`Duplicate workspace id "${id}" in ${configPath}`);
+    ids.add(id);
+    const path = String(entry?.path || "").trim();
+    if (!path || !isAbsolute(path)) {
+      throw new Error(`Workspace "${id}" must use an absolute path (${configPath})`);
+    }
+    const resolvedPath = resolve(path);
+    if (!existsSync(resolvedPath) || !statSync(resolvedPath).isDirectory()) {
+      throw new Error(`Workspace "${id}" does not exist or is not a directory: ${resolvedPath}`);
+    }
+    return {
+      id,
+      name: String(entry?.name || basename(resolvedPath) || id).trim(),
+      path: resolvedPath,
+    };
+  });
 }
+
+function normalizeHostUrl(value, id) {
+  if (!value) return "";
+  const parsed = new URL(String(value));
+  const localHttp =
+    parsed.protocol === "http:" &&
+    ["127.0.0.1", "localhost", "::1"].includes(parsed.hostname);
+  if (parsed.protocol !== "https:" && !localHttp) {
+    throw new Error(`Host "${id}" must use HTTPS or loopback HTTP (${configPath})`);
+  }
+  parsed.pathname = parsed.pathname.replace(/\/+$/, "") || "/";
+  parsed.search = "";
+  parsed.hash = "";
+  return parsed.toString().replace(/\/$/, "");
+}
+
+function normalizeHosts() {
+  const configuredHost =
+    config.host && typeof config.host === "object"
+      ? config.host
+      : { id: "current", name: hostname() };
+  const current = {
+    id: normalizedId(configuredHost.id, "current"),
+    name: String(configuredHost.name || hostname()).trim(),
+    url: normalizeHostUrl(configuredHost.url, configuredHost.id || "current"),
+  };
+  const entries =
+    Array.isArray(config.hosts) && config.hosts.length
+      ? config.hosts
+      : [current];
+  const ids = new Set();
+  const hosts = entries.map((entry, index) => {
+    const id = normalizedId(entry?.id, `host-${index + 1}`);
+    if (ids.has(id)) throw new Error(`Duplicate host id "${id}" in ${configPath}`);
+    ids.add(id);
+    return {
+      id,
+      name: String(entry?.name || id).trim(),
+      url: normalizeHostUrl(entry?.url, id),
+    };
+  });
+  const existing = hosts.find((entry) => entry.id === current.id);
+  if (existing) {
+    existing.name = current.name || existing.name;
+    existing.url = current.url || existing.url;
+  } else {
+    hosts.unshift(current);
+  }
+  return {
+    current: hosts.find((entry) => entry.id === current.id),
+    hosts,
+  };
+}
+
+const configuredWorkspaces = normalizeWorkspaces();
+const configuredHosts = normalizeHosts();
 const defaultDataDir =
   process.platform === "win32"
     ? join(process.env.LOCALAPPDATA || process.env.ProgramData || "C:\\ProgramData", "CodexMobilePwa", "data")
@@ -38,6 +132,25 @@ const maxUploadBytes = Number(config.maxUploadBytes) || 25 * 1024 * 1024;
 const maxAttachments = Number(config.maxAttachments) || 8;
 mkdirSync(dataDir, { recursive: true });
 mkdirSync(uploadDir, { recursive: true });
+const activeWorkspaceFile = join(dataDir, "active-workspace.txt");
+let activeUploads = 0;
+
+function initialWorkspaceId() {
+  const saved = existsSync(activeWorkspaceFile)
+    ? readFileSync(activeWorkspaceFile, "utf8").trim()
+    : "";
+  const legacyMatch = config.workspace
+    ? configuredWorkspaces.find((entry) => entry.path === resolve(config.workspace))
+    : null;
+  const preferred = saved || config.activeWorkspace || legacyMatch?.id;
+  return configuredWorkspaces.some((entry) => entry.id === preferred)
+    ? preferred
+    : configuredWorkspaces[0].id;
+}
+
+function persistWorkspaceId(id) {
+  writeFileSync(activeWorkspaceFile, `${id}\n`, { encoding: "utf8", mode: 0o600 });
+}
 
 class HttpError extends Error {
   constructor(statusCode, message) {
@@ -197,9 +310,16 @@ class CodexBridge {
     this.pendingRpc = new Map();
     this.pendingActions = new Map();
     this.clients = new Set();
+    const workspaceId = initialWorkspaceId();
+    const workspace = configuredWorkspaces.find((entry) => entry.id === workspaceId);
     this.state = {
       connected: false,
-      workspace: config.workspace,
+      workspaceId,
+      workspace: workspace.path,
+      workspaceName: workspace.name,
+      workspaces: configuredWorkspaces,
+      host: configuredHosts.current,
+      hosts: configuredHosts.hosts,
       limits: { maxAttachments, maxUploadBytes },
       permissionMode: "workspace",
       threadId: null,
@@ -214,6 +334,10 @@ class CodexBridge {
 
   snapshot() {
     return { ...this.state, pendingActions: [...this.pendingActions.values()] };
+  }
+
+  currentWorkspace() {
+    return configuredWorkspaces.find((entry) => entry.id === this.state.workspaceId);
   }
 
   publish() {
@@ -286,7 +410,7 @@ class CodexBridge {
         clientInfo: {
           name: "codex-mobile-pwa",
           title: "Codex Mobile",
-          version: "0.2.0",
+          version: "0.3.0",
         },
         capabilities: { experimentalApi: true, requestAttestation: false },
       }).then((result) => {
@@ -441,7 +565,7 @@ class CodexBridge {
           approvalsReviewer: "user",
           sandboxPolicy: {
             type: "workspaceWrite",
-            writableRoots: [config.workspace],
+            writableRoots: [this.currentWorkspace().path],
             networkAccess: false,
           },
         }
@@ -465,10 +589,35 @@ class CodexBridge {
     return this.snapshot();
   }
 
+  setWorkspace(workspaceId) {
+    const workspace = configuredWorkspaces.find((entry) => entry.id === workspaceId);
+    if (!workspace) throw new HttpError(400, "Unknown workspace");
+    if (this.state.busy || this.pendingActions.size || activeUploads) {
+      throw new HttpError(
+        409,
+        "Wait for the current turn, approval, and uploads to finish before changing workspace",
+      );
+    }
+    if (workspace.id === this.state.workspaceId) return this.snapshot();
+
+    this.state.workspaceId = workspace.id;
+    this.state.workspace = workspace.path;
+    this.state.workspaceName = workspace.name;
+    this.state.permissionMode = "workspace";
+    this.state.threadId = null;
+    this.state.threadTitle = "New task";
+    this.state.turnId = null;
+    this.state.messages = [];
+    this.state.lastError = null;
+    persistWorkspaceId(workspace.id);
+    this.publish();
+    return this.snapshot();
+  }
+
   async newThread() {
     await this.start();
     const result = await this.request("thread/start", {
-      cwd: config.workspace,
+      cwd: this.currentWorkspace().path,
       ...this.permissionParams(),
       ephemeral: false,
     });
@@ -485,7 +634,7 @@ class CodexBridge {
     await this.start();
     const result = await this.request("thread/resume", {
       threadId,
-      cwd: config.workspace,
+      cwd: this.currentWorkspace().path,
       ...this.permissionParams(),
     });
     this.state.threadId = result.thread.id;
@@ -501,7 +650,7 @@ class CodexBridge {
     await this.start();
     const result = await this.request("thread/list", {
       limit: 30,
-      cwd: config.workspace,
+      cwd: this.currentWorkspace().path,
       archived: false,
     });
     return result.data.map((thread) => ({
@@ -618,6 +767,13 @@ const server = createServer(async (req, res) => {
       return json(res, 200, { ok: true });
     }
 
+    if (req.method === "GET" && url.pathname === "/api/public-config") {
+      return json(res, 200, {
+        host: configuredHosts.current,
+        hosts: configuredHosts.hosts,
+      });
+    }
+
     if (url.pathname.startsWith("/api/") && !authenticated(req)) {
       return json(res, 401, { error: "Authentication required" });
     }
@@ -626,15 +782,20 @@ const server = createServer(async (req, res) => {
       return json(res, 200, bridge.snapshot());
     }
     if (req.method === "POST" && url.pathname === "/api/uploads") {
-      const name = url.searchParams.get("name") || "attachment";
-      const data = await bodyBuffer(req, maxUploadBytes);
-      const metadata = saveUpload(name, req.headers["content-type"], data);
-      return json(res, 201, {
-        attachment: {
-          ...metadata,
-          url: `/api/uploads/${metadata.id}`,
-        },
-      });
+      activeUploads += 1;
+      try {
+        const name = url.searchParams.get("name") || "attachment";
+        const data = await bodyBuffer(req, maxUploadBytes);
+        const metadata = saveUpload(name, req.headers["content-type"], data);
+        return json(res, 201, {
+          attachment: {
+            ...metadata,
+            url: `/api/uploads/${metadata.id}`,
+          },
+        });
+      } finally {
+        activeUploads -= 1;
+      }
     }
     if (req.method === "GET" && url.pathname.startsWith("/api/uploads/")) {
       const attachment = getUpload(url.pathname.slice("/api/uploads/".length));
@@ -679,6 +840,10 @@ const server = createServer(async (req, res) => {
     if (req.method === "POST" && url.pathname === "/api/permission") {
       const body = await bodyJson(req);
       return json(res, 200, bridge.setPermissionMode(String(body.mode || "")));
+    }
+    if (req.method === "POST" && url.pathname === "/api/workspace") {
+      const body = await bodyJson(req);
+      return json(res, 200, bridge.setWorkspace(String(body.workspaceId || "")));
     }
     if (req.method === "POST" && url.pathname === "/api/send") {
       const body = await bodyJson(req);

@@ -15,7 +15,7 @@ html, body {
   background: #121613;
 }
 body { min-height: 100dvh; }
-button, input, textarea { font: inherit; letter-spacing: 0; }
+button, input, textarea, select { font: inherit; letter-spacing: 0; }
 button { cursor: pointer; }
 
 .app {
@@ -62,6 +62,40 @@ button { cursor: pointer; }
   background: #d94d4d;
 }
 .status-dot.online { background: #42c779; }
+
+.connection-controls {
+  display: grid;
+  grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.2fr);
+  gap: 8px;
+  width: min(620px, calc(100% - 24px));
+  margin: 0 auto 9px;
+}
+.select-control,
+.login-host-control {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  color: #9ba79e;
+  font-size: 12px;
+}
+.select-control select,
+.login-host-control select {
+  width: 100%;
+  min-width: 0;
+  height: 36px;
+  border: 1px solid #3b463e;
+  border-radius: 7px;
+  padding: 0 28px 0 9px;
+  background: #202721;
+  color: #eef3ee;
+  outline: none;
+  text-overflow: ellipsis;
+}
+.select-control select:focus,
+.login-host-control select:focus { border-color: #42c779; }
+.select-control select:disabled { opacity: 0.5; }
 
 .icon-button {
   width: 44px;
@@ -353,6 +387,11 @@ textarea:focus { border-color: #42c779; }
 }
 .login img { margin: 0 auto; border-radius: 8px; }
 .login h1 { margin: 0 0 10px; font-size: 25px; }
+.login-host-control {
+  width: min(330px, 85vw);
+  grid-template-columns: 48px minmax(0, 1fr);
+  text-align: left;
+}
 .login form { display: grid; gap: 10px; width: min(330px, 85vw); text-align: left; }
 .login input {
   min-height: 48px;
@@ -404,4 +443,14 @@ dialog::backdrop { background: rgba(0, 0, 0, 0.68); }
   main { padding-inline: 28px; }
   .composer { padding-inline: max(24px, calc((100vw - 900px) / 2)); }
   .approval { width: min(876px, calc(100% - 28px)); margin-inline: auto; }
+}
+
+@media (max-width: 430px) {
+  .connection-controls {
+    grid-template-columns: 1fr;
+    gap: 6px;
+  }
+  .select-control {
+    grid-template-columns: 34px minmax(0, 1fr);
+  }
 }

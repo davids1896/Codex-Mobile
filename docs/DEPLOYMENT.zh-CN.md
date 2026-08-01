@@ -198,7 +198,116 @@ cat ~/.config/codex-mobile-pwa/pairing-code.txt
 Get-Content "$env:LOCALAPPDATA\CodexMobilePwa\data\pairing-code.txt"
 ```
 
-## 6. 日常使用
+## 6. 配置多个工作目录与主机
+
+### 6.1 设计原则
+
+- 每台电脑都运行自己的 Codex Mobile Gateway。
+- 所有 Gateway 的 `hosts` 列表保持一致。
+- 每台主机的 `host.id` 不同，并指向 `hosts` 中自己的条目。
+- `workspaces` 只写当前主机上真实存在的绝对目录，各主机可以不同。
+- 真实 Tailnet 域名和私有目录只写入安装目录的 `config.json`，不要提交 Git。
+
+这种方式不会把 API Key、附件或 Codex 请求集中到某个中央服务器。选择另一台主机时，网页会直接
+跳转到该主机自己的 Tailscale Serve HTTPS 地址。
+
+### 6.2 收集每台主机的 HTTPS 地址
+
+在每台 Linux 主机运行：
+
+```bash
+tailscale serve status
+```
+
+在 Windows PowerShell 运行：
+
+```powershell
+& 'C:\Program Files\Tailscale\tailscale.exe' serve status
+```
+
+记录每台主机显示的 `https://...ts.net` 地址。只使用 Serve 地址，不要启用 Funnel。
+
+### 6.3 配置示例
+
+下面仅为占位示例。每台主机都复制同一份 `hosts` 数组，但 `host` 和 `workspaces` 按本机修改：
+
+```json
+{
+  "port": 8787,
+  "workspace": "/home/your-user/code/main-project",
+  "workspaces": [
+    {
+      "id": "main",
+      "name": "Main project",
+      "path": "/home/your-user/code/main-project"
+    },
+    {
+      "id": "home",
+      "name": "Home",
+      "path": "/home/your-user"
+    }
+  ],
+  "host": {
+    "id": "host-a",
+    "name": "Host A",
+    "url": "https://host-a.your-tailnet.ts.net"
+  },
+  "hosts": [
+    {
+      "id": "host-a",
+      "name": "Host A",
+      "url": "https://host-a.your-tailnet.ts.net"
+    },
+    {
+      "id": "host-b",
+      "name": "Host B",
+      "url": "https://host-b.your-tailnet.ts.net"
+    }
+  ],
+  "codexPath": "/absolute/path/to/codex",
+  "maxUploadBytes": 26214400,
+  "maxAttachments": 8
+}
+```
+
+旧的单一 `workspace` 配置仍兼容。设置 `workspaces` 后，`workspace` 主要供旧版本和安装器兼容；
+网页实际使用白名单中的目录。重新运行安装器会保留已有的 `workspaces`、`host` 和 `hosts`。
+
+### 6.4 修改私有配置
+
+Linux：
+
+```bash
+cp -p ~/.local/share/codex-mobile-pwa/config.json \
+  ~/.local/share/codex-mobile-pwa/config.json.manual-backup
+${EDITOR:-vi} ~/.local/share/codex-mobile-pwa/config.json
+systemctl --user restart codex-mobile-pwa
+systemctl --user --no-pager --full status codex-mobile-pwa
+```
+
+Windows：
+
+```powershell
+$app = "$env:LOCALAPPDATA\CodexMobilePwa\app"
+Copy-Item "$app\config.json" "$app\config.json.manual-backup" -Force
+notepad "$app\config.json"
+powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "$app\stop.ps1"
+powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "$app\start.ps1"
+```
+
+如果某个目录不存在、不是绝对路径、ID 重复，Gateway 会拒绝启动，并把具体错误写入日志。
+
+### 6.5 验证切换
+
+1. 打开任意一台主机的网页，确认顶部出现“主机”和“目录”选择器。
+2. 切换目录，确认消息视图清空，空白页显示新绝对路径。
+3. 新建任务并让 Codex 输出当前目录，确认 cwd 已改变。
+4. 切换到“完全访问”，再切目录，确认权限自动恢复为“工作区”。
+5. 切换另一台主机，首次输入该主机自己的配对码。
+6. 返回原主机，确认原域名的登录会话仍然有效。
+7. 重启 Gateway，确认最近一次选择的目录仍被恢复。
+
+## 7. 日常使用
 
 1. 打开手机 Tailscale。
 2. 打开 Codex Mobile PWA。
@@ -209,7 +318,7 @@ Get-Content "$env:LOCALAPPDATA\CodexMobilePwa\data\pairing-code.txt"
 附件按钮支持图片与普通文件。图片直接作为视觉输入发送；普通附件保存在主机私有
 数据目录，并将本机路径交给 Codex 读取。
 
-## 7. 权限模式
+## 8. 权限模式
 
 工作区：
 
@@ -224,7 +333,7 @@ Get-Content "$env:LOCALAPPDATA\CodexMobilePwa\data\pairing-code.txt"
 - 仅获得运行 Gateway 的当前用户权限，不会自动获得 root/管理员权限
 - Gateway 重启后自动恢复为工作区模式
 
-## 8. 轮换配对码与注销手机会话
+## 9. 轮换配对码与注销手机会话
 
 Linux：
 
@@ -240,7 +349,7 @@ Windows：
 
 脚本会同时轮换 Cookie 签名密钥，因此所有已登录手机都会失效并要求重新配对。
 
-## 9. 更新
+## 10. 更新
 
 ```bash
 cd Codex-Mobile
@@ -259,7 +368,7 @@ git pull --ff-only
 安装器会保留 Linux 旧配置备份；Windows 会根据参数重新生成配置。更新后重新运行
 验证脚本，并在手机上新建一个文字任务和一个图片任务。
 
-## 10. 卸载
+## 11. 卸载
 
 Linux，保留配对信息和附件：
 
@@ -288,7 +397,7 @@ Windows：
 卸载器不会自动执行 `tailscale serve reset`，因为该命令可能影响主机上的其他 Serve
 配置。确认没有其他服务后再手动调整 Tailscale Serve。
 
-## 11. 部署完成检查表
+## 12. 部署完成检查表
 
 - [ ] 主机本地 Codex 最小请求成功
 - [ ] Gateway 仅监听 `127.0.0.1:8787`
@@ -296,6 +405,8 @@ Windows：
 - [ ] Tailscale Serve 是 Tailnet only HTTPS
 - [ ] 手机通过移动网络也能访问
 - [ ] 新建文字任务成功
+- [ ] 在两个白名单目录之间切换并验证 cwd
+- [ ] 在两台主机之间切换并分别完成配对
 - [ ] 上传图片并识别成功
 - [ ] 普通附件可由 Codex 读取
 - [ ] 工作区审批正常

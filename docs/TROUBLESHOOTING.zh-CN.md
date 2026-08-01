@@ -1,5 +1,46 @@
 # 故障排查
 
+## 网页中没有出现其他目录或主机
+
+确认正在编辑的是安装目录内的私有配置，而不是仓库中的 `config.example.json`。
+
+Linux：
+
+```bash
+${EDITOR:-vi} ~/.local/share/codex-mobile-pwa/config.json
+systemctl --user restart codex-mobile-pwa
+```
+
+Windows：
+
+```powershell
+notepad "$env:LOCALAPPDATA\CodexMobilePwa\app\config.json"
+powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass `
+  -File "$env:LOCALAPPDATA\CodexMobilePwa\app\stop.ps1"
+powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass `
+  -File "$env:LOCALAPPDATA\CodexMobilePwa\app\start.ps1"
+```
+
+检查每个 `workspaces[].path` 都是本机存在的绝对目录；`id` 必须唯一，并且只能包含字母、数字、
+点、下划线和连字符。其他主机的 `hosts[].url` 必须是 Tailscale Serve 提供的 HTTPS 地址。
+
+修改前端后仍看不到选择器时，完全关闭再打开 PWA；必要时删除该 Tailnet 域名的网站缓存。
+
+## 选择另一台主机后要求重新输入配对码
+
+这是正常行为。每台主机使用独立域名、Cookie secret 和配对码。首次访问每个主机需要分别配对，
+之后浏览器会保存各自的 30 天会话 Cookie。
+
+## 无法切换工作目录
+
+Gateway 会在以下状态返回 `409`：
+
+- Codex turn 正在运行。
+- 有尚未处理的审批或问题。
+- 附件仍在上传。
+
+完成或停止当前操作后重试。切换成功后当前任务视图会清空，权限会恢复为“工作区”。
+
 ## 手机打不开 HTTPS 地址
 
 按顺序检查：

@@ -34,9 +34,40 @@ fi
 cp -a "$repo_root/gateway/." "$install_dir/"
 WORKSPACE="$workspace" PORT="$port" CODEX="$codex_path" node -e '
   const fs = require("fs");
+  const os = require("os");
+  let existing = {};
+  try {
+    existing = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+  } catch {}
+  const workspaceName = require("path").basename(process.env.WORKSPACE) || process.env.WORKSPACE;
+  const workspaces =
+    Array.isArray(existing.workspaces) && existing.workspaces.length
+      ? existing.workspaces
+      : [{ id: "default", name: workspaceName, path: process.env.WORKSPACE }];
+  if (!workspaces.some((entry) => entry.path === process.env.WORKSPACE)) {
+    workspaces.push({
+      id: `workspace-${workspaces.length + 1}`,
+      name: workspaceName,
+      path: process.env.WORKSPACE
+    });
+  }
+  const defaultHostId =
+    os.hostname().toLowerCase().replace(/[^a-z0-9._-]/g, "-").replace(/^-+|-+$/g, "") ||
+    "linux-host";
+  const host =
+    existing.host && typeof existing.host === "object"
+      ? existing.host
+      : { id: defaultHostId, name: os.hostname(), url: "" };
+  const hosts =
+    Array.isArray(existing.hosts) && existing.hosts.length
+      ? existing.hosts
+      : [host];
   const value = {
     port: Number(process.env.PORT),
     workspace: process.env.WORKSPACE,
+    workspaces,
+    host,
+    hosts,
     codexPath: process.env.CODEX,
     maxUploadBytes: 25 * 1024 * 1024,
     maxAttachments: 8
