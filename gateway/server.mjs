@@ -1,17 +1,21 @@
 import { createServer } from "node:http";
 import { spawn } from "node:child_process";
-import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
+import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import {
   appendFileSync,
+  closeSync,
   createReadStream,
   existsSync,
   mkdirSync,
+  openSync,
   readFileSync,
+  readSync,
+  realpathSync,
   statSync,
   writeFileSync,
 } from "node:fs";
 import { homedir, hostname } from "node:os";
-import { basename, extname, isAbsolute, join, relative, resolve } from "node:path";
+import { basename, dirname, extname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import readline from "node:readline";
 
@@ -117,8 +121,24 @@ function normalizeHosts() {
   };
 }
 
+function normalizeFileRoots() {
+  if (!Array.isArray(config.fileRoots)) return [];
+  return config.fileRoots.map((entry, index) => {
+    const path = String(entry || "").trim();
+    if (!path || !isAbsolute(path)) {
+      throw new Error(`fileRoots[${index}] must use an absolute path (${configPath})`);
+    }
+    const resolvedPath = resolve(path);
+    if (!existsSync(resolvedPath) || !statSync(resolvedPath).isDirectory()) {
+      throw new Error(`fileRoots[${index}] does not exist or is not a directory: ${resolvedPath}`);
+    }
+    return realpathSync(resolvedPath);
+  });
+}
+
 const configuredWorkspaces = normalizeWorkspaces();
 const configuredHosts = normalizeHosts();
+const configuredFileRoots = normalizeFileRoots();
 const defaultDataDir =
   process.platform === "win32"
     ? join(process.env.LOCALAPPDATA || process.env.ProgramData || "C:\\ProgramData", "CodexMobilePwa", "data")
@@ -223,6 +243,7 @@ const imageTypes = new Set([
   "image/png",
   "image/gif",
   "image/webp",
+  "image/avif",
 ]);
 
 const imageTypeByExtension = {
@@ -231,7 +252,66 @@ const imageTypeByExtension = {
   ".jpg": "image/jpeg",
   ".png": "image/png",
   ".webp": "image/webp",
+  ".avif": "image/avif",
 };
+
+function pathKey(path) {
+  const normalized = resolve(path);
+  return process.platform === "win32" ? normalized.toLowerCase() : normalized;
+}
+
+function pathWithin(file, rootPath) {
+  const fromRoot = relative(rootPath, file);
+  return fromRoot === "" || (!fromRoot.startsWith("..") && !isAbsolute(fromRoot));
+}
+
+function sameFileSystemObject(left, right) {
+  try {
+    const leftStat = statSync(left, { bigint: true });
+    const rightStat = statSync(right, { bigint: true });
+    return leftStat.dev === rightStat.dev && leftStat.ino === rightStat.ino;
+  } catch {
+    return false;
+  }
+}
+
+function pathWithinAllowedRoot(file, rootPath) {
+  if (pathWithin(file, rootPath)) return true;
+  if (process.platform !== "win32") return false;
+  let current = dirname(file);
+  while (true) {
+    if (sameFileSystemObject(current, rootPath)) return true;
+    const parent = dirname(current);
+    if (parent === current) return false;
+    current = parent;
+  }
+}
+
+function detectImageType(file) {
+  const buffer = Buffer.alloc(32);
+  const descriptor = openSync(file, "r");
+  let length;
+  try {
+    length = readSync(descriptor, buffer, 0, buffer.length, 0);
+  } finally {
+    closeSync(descriptor);
+  }
+  const bytes = buffer.subarray(0, length);
+  if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) {
+    return "image/jpeg";
+  }
+  if (
+    bytes.length >= 8 &&
+    bytes.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))
+  ) return "image/png";
+  const signature = bytes.toString("ascii");
+  if (signature.startsWith("GIF87a") || signature.startsWith("GIF89a")) return "image/gif";
+  if (signature.startsWith("RIFF") && signature.slice(8, 12) === "WEBP") return "image/webp";
+  if (signature.slice(4, 8) === "ftyp" && /avif|avis/.test(signature.slice(8))) {
+    return "image/avif";
+  }
+  return "";
+}
 
 function saveUpload(name, contentType, data) {
   const originalName = safeOriginalName(name);
@@ -310,14 +390,19 @@ class CodexBridge {
     this.pendingRpc = new Map();
     this.pendingActions = new Map();
     this.clients = new Set();
+    this.workspaces = configuredWorkspaces.map((entry) => ({
+      ...entry,
+      source: "configured",
+    }));
+    this.threadIndex = new Map();
     const workspaceId = initialWorkspaceId();
-    const workspace = configuredWorkspaces.find((entry) => entry.id === workspaceId);
+    const workspace = this.workspaces.find((entry) => entry.id === workspaceId);
     this.state = {
       connected: false,
       workspaceId,
       workspace: workspace.path,
       workspaceName: workspace.name,
-      workspaces: configuredWorkspaces,
+      workspaces: this.workspaces,
       host: configuredHosts.current,
       hosts: configuredHosts.hosts,
       limits: { maxAttachments, maxUploadBytes },
@@ -337,7 +422,59 @@ class CodexBridge {
   }
 
   currentWorkspace() {
-    return configuredWorkspaces.find((entry) => entry.id === this.state.workspaceId);
+    return this.workspaces.find((entry) => entry.id === this.state.workspaceId);
+  }
+
+  registerWorkspace(path, name = "") {
+    const requestedPath = String(path || "").trim();
+    if (!requestedPath || !isAbsolute(requestedPath)) return null;
+    const resolvedPath = resolve(requestedPath);
+    if (
+      !existsSync(resolvedPath) ||
+      !statSync(resolvedPath).isDirectory()
+    ) return null;
+    const canonicalPath = realpathSync(resolvedPath);
+    const existing = this.workspaces.find(
+      (entry) => pathKey(entry.path) === pathKey(canonicalPath),
+    );
+    if (existing) return existing;
+    const workspace = {
+      id: `recent-${createHash("sha256").update(pathKey(canonicalPath)).digest("hex").slice(0, 12)}`,
+      name: String(name || basename(canonicalPath) || canonicalPath),
+      path: canonicalPath,
+      source: "recent",
+    };
+    this.workspaces.push(workspace);
+    this.state.workspaces = this.workspaces;
+    return workspace;
+  }
+
+  localImage(path) {
+    const requestedPath = String(path || "").trim();
+    if (!requestedPath || requestedPath.length > 4096 || !isAbsolute(requestedPath)) {
+      throw new HttpError(400, "A valid absolute image path is required");
+    }
+    const candidate = resolve(requestedPath);
+    if (!existsSync(candidate) || !statSync(candidate).isFile()) {
+      throw new HttpError(404, "Image not found");
+    }
+    const file = realpathSync(candidate);
+    const roots = [
+      ...configuredFileRoots,
+      ...this.workspaces.map((entry) => entry.path),
+    ].filter((entry) => existsSync(entry) && statSync(entry).isDirectory())
+      .map((entry) => realpathSync(entry));
+    if (!roots.some((entry) => pathWithinAllowedRoot(file, entry))) {
+      throw new HttpError(403, "Image is outside the allowed directories");
+    }
+    const type = detectImageType(file);
+    if (!type) throw new HttpError(415, "Only JPEG, PNG, GIF, WebP, and AVIF images are allowed");
+    return {
+      file,
+      type,
+      name: basename(file),
+      size: statSync(file).size,
+    };
   }
 
   publish() {
@@ -545,7 +682,7 @@ class CodexBridge {
     return messages;
   }
 
-  permissionParams(forTurn = false) {
+  permissionParams(forTurn = false, workspacePath = this.currentWorkspace().path) {
     if (this.state.permissionMode === "full") {
       return forTurn
         ? {
@@ -565,7 +702,7 @@ class CodexBridge {
           approvalsReviewer: "user",
           sandboxPolicy: {
             type: "workspaceWrite",
-            writableRoots: [this.currentWorkspace().path],
+            writableRoots: [workspacePath],
             networkAccess: false,
           },
         }
@@ -590,7 +727,7 @@ class CodexBridge {
   }
 
   setWorkspace(workspaceId) {
-    const workspace = configuredWorkspaces.find((entry) => entry.id === workspaceId);
+    const workspace = this.workspaces.find((entry) => entry.id === workspaceId);
     if (!workspace) throw new HttpError(400, "Unknown workspace");
     if (this.state.busy || this.pendingActions.size || activeUploads) {
       throw new HttpError(
@@ -609,7 +746,7 @@ class CodexBridge {
     this.state.turnId = null;
     this.state.messages = [];
     this.state.lastError = null;
-    persistWorkspaceId(workspace.id);
+    if (workspace.source === "configured") persistWorkspaceId(workspace.id);
     this.publish();
     return this.snapshot();
   }
@@ -632,11 +769,28 @@ class CodexBridge {
 
   async resume(threadId) {
     await this.start();
+    if (this.state.busy || this.pendingActions.size || activeUploads) {
+      throw new HttpError(
+        409,
+        "Wait for the current turn, approval, and uploads to finish before resuming another task",
+      );
+    }
+    const readResult = await this.request("thread/read", {
+      threadId,
+      includeTurns: false,
+    });
+    const thread = readResult.thread;
+    const workspace = this.registerWorkspace(thread.cwd);
+    if (!workspace) throw new HttpError(409, "The task working directory is unavailable");
     const result = await this.request("thread/resume", {
       threadId,
-      cwd: this.currentWorkspace().path,
-      ...this.permissionParams(),
+      cwd: workspace.path,
+      ...this.permissionParams(false, workspace.path),
     });
+    this.state.workspaceId = workspace.id;
+    this.state.workspace = workspace.path;
+    this.state.workspaceName = workspace.name;
+    this.state.permissionMode = "workspace";
     this.state.threadId = result.thread.id;
     this.state.threadTitle = result.thread.name || result.thread.preview || "Codex task";
     this.state.messages = this.loadMessages(result.thread);
@@ -646,19 +800,74 @@ class CodexBridge {
     return this.snapshot();
   }
 
-  async listThreads() {
+  async listThreads({ query = "", cursor = "", cwd = "" } = {}) {
     await this.start();
-    const result = await this.request("thread/list", {
+    const params = {
       limit: 30,
-      cwd: this.currentWorkspace().path,
       archived: false,
+      sortKey: "updated_at",
+      sortDirection: "desc",
+    };
+    const normalizedQuery = String(query || "").trim().slice(0, 160);
+    const normalizedCursor = String(cursor || "").trim();
+    const normalizedCwd = String(cwd || "").trim();
+    if (normalizedQuery) params.searchTerm = normalizedQuery;
+    if (normalizedCursor) params.cursor = normalizedCursor;
+    if (normalizedCwd) {
+      const known = this.workspaces.find(
+        (entry) => pathKey(entry.path) === pathKey(normalizedCwd),
+      );
+      if (!known) throw new HttpError(400, "Unknown task directory");
+      params.cwd = known.path;
+    }
+    const result = await this.request("thread/list", params);
+    const threads = result.data.map((thread) => {
+      const workspace = this.registerWorkspace(thread.cwd);
+      const summary = {
+        id: thread.id,
+        title: thread.name || thread.preview || "Untitled task",
+        preview: thread.preview || "",
+        cwd: workspace?.path || thread.cwd,
+        updatedAt: thread.updatedAt,
+        status: thread.status,
+      };
+      this.threadIndex.set(thread.id, summary);
+      return summary;
     });
-    return result.data.map((thread) => ({
-      id: thread.id,
-      title: thread.name || thread.preview || "Untitled task",
-      updatedAt: thread.updatedAt,
-      status: thread.status,
-    }));
+    return {
+      threads,
+      nextCursor: result.nextCursor || null,
+      workspaces: this.workspaces,
+    };
+  }
+
+  async listDirectories() {
+    await this.start();
+    let cursor = "";
+    let page = 0;
+    do {
+      const result = await this.request("thread/list", {
+        limit: 100,
+        archived: false,
+        sortKey: "updated_at",
+        sortDirection: "desc",
+        ...(cursor ? { cursor } : {}),
+      });
+      for (const thread of result.data) {
+        const workspace = this.registerWorkspace(thread.cwd);
+        this.threadIndex.set(thread.id, {
+          id: thread.id,
+          title: thread.name || thread.preview || "Untitled task",
+          preview: thread.preview || "",
+          cwd: workspace?.path || thread.cwd,
+          updatedAt: thread.updatedAt,
+          status: thread.status,
+        });
+      }
+      cursor = result.nextCursor || "";
+      page += 1;
+    } while (cursor && page < 20);
+    return { workspaces: this.workspaces };
   }
 
   async sendMessage(text, attachmentIds = []) {
@@ -811,8 +1020,28 @@ const server = createServer(async (req, res) => {
       createReadStream(attachment.file).pipe(res);
       return;
     }
+    if (req.method === "GET" && url.pathname === "/api/local-file") {
+      const image = bridge.localImage(url.searchParams.get("path"));
+      res.writeHead(200, {
+        "Content-Type": image.type,
+        "Content-Length": image.size,
+        "Content-Disposition": `inline; filename*=UTF-8''${encodeURIComponent(image.name)}`,
+        "Cache-Control": "private, max-age=300",
+        "Content-Security-Policy": "sandbox",
+        "X-Content-Type-Options": "nosniff",
+      });
+      createReadStream(image.file).pipe(res);
+      return;
+    }
     if (req.method === "GET" && url.pathname === "/api/threads") {
-      return json(res, 200, { threads: await bridge.listThreads() });
+      return json(res, 200, await bridge.listThreads({
+        query: url.searchParams.get("query"),
+        cursor: url.searchParams.get("cursor"),
+        cwd: url.searchParams.get("cwd"),
+      }));
+    }
+    if (req.method === "GET" && url.pathname === "/api/directories") {
+      return json(res, 200, await bridge.listDirectories());
     }
     if (req.method === "GET" && url.pathname === "/api/events") {
       res.writeHead(200, {
@@ -889,3 +1118,20 @@ server.listen(config.port, "127.0.0.1", () => {
   log(`gateway listening on 127.0.0.1:${config.port}`);
   console.log(`Codex Mobile gateway: http://127.0.0.1:${config.port}`);
 });
+
+let shuttingDown = false;
+function shutdown() {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  for (const client of bridge.clients) client.end();
+  bridge.clients.clear();
+  if (bridge.child?.stdin.writable) bridge.child.stdin.end();
+  server.close(() => process.exit(0));
+  setTimeout(() => {
+    if (bridge.child && bridge.child.exitCode === null) bridge.child.kill();
+    process.exit(0);
+  }, 2_000).unref();
+}
+
+process.on("SIGINT", shutdown);
+process.on("SIGTERM", shutdown);

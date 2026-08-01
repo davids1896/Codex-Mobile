@@ -75,7 +75,11 @@ chmod +x scripts/linux/*.sh
 --codex /absolute/path/to/codex
 --install-dir /custom/app/path
 --data-dir /custom/private/data/path
+--file-root /home/your-user
 ```
+
+`--file-root` 可以重复使用。它只控制回复中本机绝对图片路径的显示范围，不会把文件上传到手机之外的服务。
+首次安装默认使用当前用户主目录；升级会保留已有 `fileRoots`。
 
 默认路径：
 
@@ -150,8 +154,11 @@ Set-ExecutionPolicy -Scope Process Bypass -Force
 .\scripts\windows\install.ps1 `
   -Workspace 'D:\code\repo' `
   -Port 8787 `
-  -CodexPath "$env:APPDATA\npm\codex.cmd"
+  -CodexPath "$env:APPDATA\npm\codex.cmd" `
+  -FileRoot "$env:USERPROFILE"
 ```
+
+`-FileRoot` 接受一个或多个目录。首次安装默认使用当前用户主目录；升级会保留已有 `fileRoots`。
 
 默认路径：
 
@@ -205,7 +212,8 @@ Get-Content "$env:LOCALAPPDATA\CodexMobilePwa\data\pairing-code.txt"
 - 每台电脑都运行自己的 Codex Mobile Gateway。
 - 所有 Gateway 的 `hosts` 列表保持一致。
 - 每台主机的 `host.id` 不同，并指向 `hosts` 中自己的条目。
-- `workspaces` 只写当前主机上真实存在的绝对目录，各主机可以不同。
+- `workspaces` 只需写常用的新任务起始目录；历史任务中的其他有效目录会自动发现。
+- `fileRoots` 决定回复中的本机绝对图片路径可以从哪些目录读取。
 - 真实 Tailnet 域名和私有目录只写入安装目录的 `config.json`，不要提交 Git。
 
 这种方式不会把 API Key、附件或 Codex 请求集中到某个中央服务器。选择另一台主机时，网页会直接
@@ -265,13 +273,17 @@ tailscale serve status
     }
   ],
   "codexPath": "/absolute/path/to/codex",
+  "fileRoots": [
+    "/home/your-user"
+  ],
   "maxUploadBytes": 26214400,
   "maxAttachments": 8
 }
 ```
 
-旧的单一 `workspace` 配置仍兼容。设置 `workspaces` 后，`workspace` 主要供旧版本和安装器兼容；
-网页实际使用白名单中的目录。重新运行安装器会保留已有的 `workspaces`、`host` 和 `hosts`。
+旧的单一 `workspace` 配置仍兼容。设置 `workspaces` 后，`workspace` 主要供旧版本和安装器兼容。
+网页会在启动后通过 Codex `thread/list` 发现历史任务目录；恢复任务时再通过 `thread/read` 使用该任务记录的真实
+`cwd`，不能由手机伪造任意路径。重新运行安装器会保留已有的 `workspaces`、`host`、`hosts` 和 `fileRoots`。
 
 ### 6.4 修改私有配置
 
@@ -300,12 +312,15 @@ powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "$app\start.ps1"
 ### 6.5 验证切换
 
 1. 打开任意一台主机的网页，确认顶部出现“主机”和“目录”选择器。
-2. 切换目录，确认消息视图清空，空白页显示新绝对路径。
-3. 新建任务并让 Codex 输出当前目录，确认 cwd 已改变。
-4. 切换到“完全访问”，再切目录，确认权限自动恢复为“工作区”。
-5. 切换另一台主机，首次输入该主机自己的配对码。
-6. 返回原主机，确认原域名的登录会话仍然有效。
-7. 重启 Gateway，确认最近一次选择的目录仍被恢复。
+2. 打开“历史任务”，确认能看到不同绝对路径的任务。
+3. 输入任务标题或内容关键词，确认结果被筛选；再按目录筛选。
+4. 恢复一个非固定目录中的任务，确认顶部目录与真实 cwd 同步改变。
+5. 切换目录，确认消息视图清空，空白页显示新绝对路径。
+6. 新建任务并让 Codex 输出当前目录，确认 cwd 已改变。
+7. 切换到“完全访问”，再切目录，确认权限自动恢复为“工作区”。
+8. 切换另一台主机，首次输入该主机自己的配对码。
+9. 返回原主机，确认原域名的登录会话仍然有效。
+10. 重启 Gateway，确认最近一次选择的固定目录仍被恢复。
 
 ## 7. 日常使用
 
@@ -317,6 +332,14 @@ powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "$app\start.ps1"
 
 附件按钮支持图片与普通文件。图片直接作为视觉输入发送；普通附件保存在主机私有
 数据目录，并将本机路径交给 Codex 读取。
+
+助手回复支持安全 Markdown。Linux `/home/.../image.jpg` 与 Windows `C:\...\image.png`
+形式的本机绝对图片路径会重写到经过认证的图片接口。接口只允许图片文件签名正确、真实路径位于
+`workspaces`、历史任务目录或 `fileRoots` 中的 JPEG、PNG、GIF、WebP 与 AVIF。
+
+需要像 VS Code 一样浏览、编辑和搜索该用户有权访问的全部远程文件时，可另外部署 Tailnet-only
+`code-server`。它与 Codex Mobile 使用独立端口和独立密码，不改变 Gateway 的权限模型。完整步骤见
+[手机远程文件编辑器](MOBILE-EDITOR.zh-CN.md)。
 
 ## 8. 权限模式
 
@@ -365,7 +388,7 @@ git pull --ff-only
 .\scripts\windows\install.ps1 -Workspace 'D:\absolute\path\to\repository'
 ```
 
-安装器会保留 Linux 旧配置备份；Windows 会根据参数重新生成配置。更新后重新运行
+安装器会备份旧配置，并保留多主机、工作区、图片根目录和上传限制。更新后重新运行
 验证脚本，并在手机上新建一个文字任务和一个图片任务。
 
 ## 11. 卸载
@@ -406,8 +429,10 @@ Windows：
 - [ ] 手机通过移动网络也能访问
 - [ ] 新建文字任务成功
 - [ ] 在两个白名单目录之间切换并验证 cwd
+- [ ] 历史任务能跨目录列出、按关键词搜索并按目录筛选
 - [ ] 在两台主机之间切换并分别完成配对
 - [ ] 上传图片并识别成功
+- [ ] 回复中的本机绝对图片路径能显示，非图片和根目录外文件被拒绝
 - [ ] 普通附件可由 Codex 读取
 - [ ] 工作区审批正常
 - [ ] 完全访问二次确认正常

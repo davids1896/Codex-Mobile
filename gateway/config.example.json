@@ -31,6 +31,9 @@
     }
   ],
   "codexPath": "/absolute/path/to/codex",
+  "fileRoots": [
+    "/home/your-user"
+  ],
   "maxUploadBytes": 26214400,
   "maxAttachments": 8
 }

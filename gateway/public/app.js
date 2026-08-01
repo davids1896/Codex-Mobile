@@ -1,3 +1,5 @@
+import { renderMarkdown } from "./markdown.js";
+
 const login = document.querySelector("#login");
 const app = document.querySelector("#app");
 const loginForm = document.querySelector("#login-form");
@@ -16,6 +18,9 @@ const threadTitle = document.querySelector("#thread-title");
 const approval = document.querySelector("#approval");
 const dialog = document.querySelector("#threads-dialog");
 const threadsList = document.querySelector("#threads-list");
+const threadSearch = document.querySelector("#thread-search");
+const threadDirectory = document.querySelector("#thread-directory");
+const threadsMore = document.querySelector("#threads-more");
 const hostSelect = document.querySelector("#host-select");
 const workspaceSelect = document.querySelector("#workspace-select");
 const loginHostControl = document.querySelector("#login-host-control");
@@ -29,6 +34,8 @@ let events = null;
 let selectedFiles = [];
 let uploading = false;
 let publicConfig = null;
+let threadsCursor = null;
+let threadSearchTimer = null;
 
 async function api(path, options = {}) {
   const headers = { ...(options.headers || {}) };
@@ -100,14 +107,86 @@ function navigateToHost(select) {
   window.location.assign(target.url);
 }
 
-function renderMessageAttachments(items = []) {
-  if (!items.length) return "";
-  return `<div class="message-attachments">${items.map((item) => {
-    const preview = item.isImage && item.url
-      ? `<img src="${escapeHtml(item.url)}" alt="${escapeHtml(item.name)}">`
-      : `<span class="file-symbol" aria-hidden="true">FILE</span>`;
-    return `<div class="message-attachment">${preview}<span>${escapeHtml(item.name)}</span></div>`;
-  }).join("")}</div>`;
+function localImageUrl(value) {
+  const path = String(value || "");
+  if (/^[a-zA-Z]:[\\/]/.test(path) || path.startsWith("/")) {
+    return `/api/local-file?path=${encodeURIComponent(path)}`;
+  }
+  return path;
+}
+
+function messageAttachments(items = []) {
+  if (!items.length) return null;
+  const container = document.createElement("div");
+  container.className = "message-attachments";
+  for (const item of items) {
+    const attachment = document.createElement("div");
+    attachment.className = "message-attachment";
+    if (item.isImage && item.url) {
+      const link = document.createElement("a");
+      link.href = localImageUrl(item.url);
+      link.target = "_blank";
+      link.rel = "noopener noreferrer";
+      const image = document.createElement("img");
+      image.src = link.href;
+      image.alt = item.name || "图片";
+      image.loading = "lazy";
+      link.append(image);
+      attachment.append(link);
+    } else {
+      const symbol = document.createElement("span");
+      symbol.className = "file-symbol";
+      symbol.textContent = "FILE";
+      symbol.setAttribute("aria-hidden", "true");
+      attachment.append(symbol);
+    }
+    const name = document.createElement("span");
+    name.textContent = item.name || "附件";
+    attachment.append(name);
+    container.append(attachment);
+  }
+  return container;
+}
+
+function renderMessages() {
+  messages.replaceChildren();
+  if (!state.messages.length) {
+    const empty = document.createElement("div");
+    empty.className = "empty";
+    empty.append(
+      document.createTextNode(`已连接到 ${state.workspaceName || state.workspace}`),
+      document.createElement("br"),
+      document.createTextNode(state.workspace),
+      document.createElement("br"),
+      document.createTextNode("可以发送文字、图片或文件"),
+    );
+    messages.append(empty);
+    return;
+  }
+
+  for (const message of state.messages) {
+    const article = document.createElement("article");
+    article.className = `message ${message.role}`;
+    if (message.text) {
+      if (message.role === "assistant") {
+        article.append(renderMarkdown(message.text));
+      } else {
+        const text = document.createElement("div");
+        text.className = "message-text";
+        text.textContent = message.text;
+        article.append(text);
+      }
+    }
+    const attachments = messageAttachments(message.attachments);
+    if (attachments) article.append(attachments);
+    if (message.output) {
+      const output = document.createElement("pre");
+      output.textContent = message.output;
+      article.append(output);
+    }
+    messages.append(article);
+  }
+  messages.scrollTop = messages.scrollHeight;
 }
 
 function render() {
@@ -128,19 +207,7 @@ function render() {
     button.disabled = state.busy || uploading;
   });
 
-  if (!state.messages.length) {
-    messages.innerHTML = `<div class="empty">已连接到 ${escapeHtml(state.workspaceName || state.workspace)}<br>${escapeHtml(state.workspace)}<br>可以发送文字、图片或文件</div>`;
-  } else {
-    messages.innerHTML = state.messages.map((message) => {
-      const output = message.output ? `<pre>${escapeHtml(message.output)}</pre>` : "";
-      return `<article class="message ${message.role}">
-        ${message.text ? `<div>${escapeHtml(message.text)}</div>` : ""}
-        ${renderMessageAttachments(message.attachments)}
-        ${output}
-      </article>`;
-    }).join("");
-    messages.scrollTop = messages.scrollHeight;
-  }
+  renderMessages();
 
   if (state.lastError) {
     messages.insertAdjacentHTML(
@@ -427,30 +494,117 @@ document.querySelector("#new-button").onclick = async () => {
   if (state?.busy && !confirm("当前任务仍在运行，确定新建任务？")) return;
   await api("/api/thread/new", { method: "POST", body: "{}" });
 };
-document.querySelector("#threads-button").onclick = async () => {
-  threadsList.innerHTML = "<p class='empty'>正在加载</p>";
+
+function renderThreadDirectories(workspaces = []) {
+  const selected = threadDirectory.value;
+  const options = [{ path: "", name: "全部目录" }, ...workspaces];
+  threadDirectory.replaceChildren(...options.map((workspace) => {
+    const option = document.createElement("option");
+    option.value = workspace.path || "";
+    option.textContent = workspace.path
+      ? `${workspace.name || workspace.path} - ${workspace.path}`
+      : workspace.name;
+    option.title = workspace.path || "";
+    return option;
+  }));
+  threadDirectory.value = options.some((entry) => entry.path === selected) ? selected : "";
+}
+
+function threadRow(thread) {
+  const button = document.createElement("button");
+  button.className = "thread-row";
+  button.type = "button";
+  button.dataset.thread = thread.id;
+  const title = document.createElement("strong");
+  title.textContent = thread.title;
+  const path = document.createElement("span");
+  path.className = "thread-path";
+  path.textContent = thread.cwd || "未知目录";
+  path.title = thread.cwd || "";
+  const detail = document.createElement("small");
+  const updatedAt = Number(thread.updatedAt);
+  detail.textContent = Number.isFinite(updatedAt)
+    ? new Date(updatedAt * 1000).toLocaleString()
+    : "";
+  button.append(title, path, detail);
+  button.onclick = async () => {
+    button.disabled = true;
+    try {
+      state = await api("/api/thread/resume", {
+        method: "POST",
+        body: JSON.stringify({ threadId: thread.id }),
+      });
+      render();
+      dialog.close();
+    } catch (error) {
+      alert(`无法恢复任务：${error.message}`);
+      button.disabled = false;
+    }
+  };
+  return button;
+}
+
+async function loadThreads(reset = true) {
+  if (reset) {
+    threadsCursor = null;
+    threadsList.innerHTML = "<p class='empty compact'>正在加载</p>";
+  }
+  threadsMore.disabled = true;
+  try {
+    const params = new URLSearchParams();
+    if (threadSearch.value.trim()) params.set("query", threadSearch.value.trim());
+    if (threadDirectory.value) params.set("cwd", threadDirectory.value);
+    if (!reset && threadsCursor) params.set("cursor", threadsCursor);
+    const result = await api(`/api/threads?${params}`);
+    if (state && result.workspaces) {
+      state.workspaces = result.workspaces;
+      renderWorkspaces();
+      renderThreadDirectories(result.workspaces);
+    }
+    if (reset) threadsList.replaceChildren();
+    for (const thread of result.threads) threadsList.append(threadRow(thread));
+    if (!threadsList.children.length) {
+      threadsList.innerHTML = "<p class='empty compact'>没有匹配的任务</p>";
+    }
+    threadsCursor = result.nextCursor;
+    threadsMore.hidden = !threadsCursor;
+  } catch (error) {
+    threadsList.innerHTML = `<p class="error">${escapeHtml(error.message)}</p>`;
+    threadsMore.hidden = true;
+  } finally {
+    threadsMore.disabled = false;
+  }
+}
+
+async function openThreads() {
+  threadsList.innerHTML = "<p class='empty compact'>正在发现本机任务与目录</p>";
+  threadsMore.hidden = true;
   dialog.showModal();
   try {
-    const result = await api("/api/threads");
-    threadsList.innerHTML = result.threads.map((thread) => `
-      <button class="thread-row" data-thread="${thread.id}">
-        <strong>${escapeHtml(thread.title)}</strong>
-        <small>${new Date(thread.updatedAt * 1000).toLocaleString()}</small>
-      </button>`).join("") || "<p class='empty'>暂无历史任务</p>";
-    threadsList.querySelectorAll("[data-thread]").forEach((button) => {
-      button.onclick = async () => {
-        await api("/api/thread/resume", {
-          method: "POST",
-          body: JSON.stringify({ threadId: button.dataset.thread }),
-        });
-        dialog.close();
-      };
-    });
+    const directories = await api("/api/directories");
+    if (state) {
+      state.workspaces = directories.workspaces;
+      renderWorkspaces();
+    }
+    renderThreadDirectories(directories.workspaces);
   } catch (error) {
     threadsList.innerHTML = `<p class="error">${escapeHtml(error.message)}</p>`;
   }
+  await loadThreads(true);
+  threadSearch.focus();
+}
+
+document.querySelector("#threads-button").onclick = openThreads;
+threadSearch.addEventListener("input", () => {
+  clearTimeout(threadSearchTimer);
+  threadSearchTimer = setTimeout(() => loadThreads(true), 300);
+});
+threadDirectory.addEventListener("change", () => loadThreads(true));
+threadsMore.addEventListener("click", () => loadThreads(false));
+document.querySelector("#close-threads").onclick = () => {
+  clearTimeout(threadSearchTimer);
+  dialog.close();
 };
-document.querySelector("#close-threads").onclick = () => dialog.close();
 
 if ("serviceWorker" in navigator) {
   navigator.serviceWorker.register("/sw.js").catch(() => {});

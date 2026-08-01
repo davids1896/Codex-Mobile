@@ -9,7 +9,7 @@
     <meta name="apple-mobile-web-app-title" content="Codex Mobile">
     <link rel="manifest" href="/manifest.webmanifest">
     <link rel="apple-touch-icon" href="/icons/icon-192.png">
-    <link rel="stylesheet" href="/app.css?v=7">
+    <link rel="stylesheet" href="/app.css?v=8">
     <title>Codex Mobile</title>
   </head>
   <body>
@@ -82,9 +82,22 @@
         <strong>历史任务</strong>
         <button id="close-threads" class="icon-button" aria-label="关闭">&times;</button>
       </div>
+      <div class="thread-filters">
+        <label for="thread-search">
+          <span>搜索</span>
+          <input id="thread-search" type="search" placeholder="按任务标题关键词搜索">
+        </label>
+        <label for="thread-directory">
+          <span>目录</span>
+          <select id="thread-directory">
+            <option value="">全部目录</option>
+          </select>
+        </label>
+      </div>
       <div id="threads-list" class="threads-list"></div>
+      <button id="threads-more" class="threads-more" type="button" hidden>加载更多</button>
     </dialog>
 
-    <script type="module" src="/app.js?v=7"></script>
+    <script type="module" src="/app.js?v=8"></script>
   </body>
 </html>

@@ -167,14 +167,18 @@ main {
   padding: 32px;
   overflow-wrap: anywhere;
 }
+.empty.compact {
+  min-height: 160px;
+  padding: 24px;
+}
 
 .message {
   max-width: 860px;
   margin: 0 auto 18px;
-  white-space: pre-wrap;
   overflow-wrap: anywhere;
   line-height: 1.55;
 }
+.message-text { white-space: pre-wrap; }
 .message.user {
   width: fit-content;
   max-width: min(86%, 720px);
@@ -184,6 +188,63 @@ main {
   background: #2b593d;
 }
 .message.assistant { color: #edf2ed; }
+.markdown > :first-child { margin-top: 0; }
+.markdown > :last-child { margin-bottom: 0; }
+.markdown p,
+.markdown ul,
+.markdown ol,
+.markdown blockquote,
+.markdown pre { margin: 0 0 12px; }
+.markdown ul,
+.markdown ol { padding-left: 24px; }
+.markdown li + li { margin-top: 5px; }
+.markdown h3,
+.markdown h4,
+.markdown h5,
+.markdown h6 {
+  margin: 18px 0 8px;
+  font-size: 16px;
+  line-height: 1.35;
+}
+.markdown a { color: #73d69b; }
+.markdown code {
+  border-radius: 4px;
+  padding: 2px 5px;
+  background: #252d27;
+  font: 0.9em/1.45 "Cascadia Code", "SFMono-Regular", monospace;
+}
+.markdown pre {
+  max-width: 100%;
+  overflow: auto;
+  border: 1px solid #303a33;
+  border-radius: 7px;
+  padding: 11px;
+  background: #171d19;
+}
+.markdown pre code {
+  padding: 0;
+  background: transparent;
+  white-space: pre;
+}
+.markdown blockquote {
+  border-left: 3px solid #657469;
+  padding-left: 11px;
+  color: #b8c4ba;
+}
+.markdown-image-link {
+  display: block;
+  width: fit-content;
+  max-width: 100%;
+  margin: 9px 0 12px;
+}
+.markdown-image {
+  display: block;
+  width: auto;
+  max-width: 100%;
+  max-height: 70dvh;
+  border-radius: 6px;
+  object-fit: contain;
+}
 .message.activity {
   padding: 9px 11px;
   border-left: 3px solid #b78a3d;
@@ -420,6 +481,34 @@ dialog::backdrop { background: rgba(0, 0, 0, 0.68); }
   padding: 10px 12px;
   border-bottom: 1px solid #303832;
 }
+.thread-filters {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 8px;
+  padding: 10px 12px;
+  border-bottom: 1px solid #303832;
+}
+.thread-filters label {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+  color: #9ba79e;
+  font-size: 12px;
+}
+.thread-filters input,
+.thread-filters select {
+  width: 100%;
+  min-width: 0;
+  height: 40px;
+  border: 1px solid #3b463e;
+  border-radius: 7px;
+  padding: 0 9px;
+  background: #202721;
+  color: #eef3ee;
+  outline: none;
+}
+.thread-filters input:focus,
+.thread-filters select:focus { border-color: #42c779; }
 .threads-list { overflow-y: auto; max-height: 70dvh; }
 .thread-row {
   width: 100%;
@@ -438,6 +527,25 @@ dialog::backdrop { background: rgba(0, 0, 0, 0.68); }
   white-space: nowrap;
 }
 .thread-row small { margin-top: 4px; color: #8e9a91; }
+.thread-path {
+  display: block;
+  margin-top: 5px;
+  overflow: hidden;
+  color: #b1bcb3;
+  font: 12px/1.35 "Cascadia Code", "SFMono-Regular", monospace;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.threads-more {
+  width: calc(100% - 24px);
+  min-height: 42px;
+  margin: 10px 12px 12px;
+  border: 1px solid #3b463e;
+  border-radius: 7px;
+  background: #202721;
+  color: #dbe3dc;
+}
+.threads-more:disabled { opacity: 0.5; }
 
 @media (min-width: 760px) {
   main { padding-inline: 28px; }
@@ -453,4 +561,5 @@ dialog::backdrop { background: rgba(0, 0, 0, 0.68); }
   .select-control {
     grid-template-columns: 34px minmax(0, 1fr);
   }
+  .thread-filters { grid-template-columns: 1fr; }
 }

@@ -6,6 +6,7 @@ port="8787"
 install_dir="${HOME}/.local/share/codex-mobile-pwa"
 data_dir="${HOME}/.config/codex-mobile-pwa"
 codex_path="${CODEX_PATH:-$(command -v codex || true)}"
+file_roots=()
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -14,6 +15,7 @@ while [[ $# -gt 0 ]]; do
     --install-dir) install_dir="$2"; shift 2 ;;
     --data-dir) data_dir="$2"; shift 2 ;;
     --codex) codex_path="$2"; shift 2 ;;
+    --file-root) file_roots+=("$2"); shift 2 ;;
     *) echo "Unknown argument: $1" >&2; exit 2 ;;
   esac
 done
@@ -23,6 +25,13 @@ workspace="$(realpath "$workspace")"
 [[ -d "$workspace" ]] || { echo "Workspace not found: $workspace" >&2; exit 1; }
 node_path="$(command -v node)"
 [[ -x "$codex_path" ]] || { echo "Codex executable not found: $codex_path" >&2; exit 1; }
+for index in "${!file_roots[@]}"; do
+  [[ -d "${file_roots[$index]}" ]] || {
+    echo "File root not found: ${file_roots[$index]}" >&2
+    exit 1
+  }
+  file_roots[$index]="$(realpath "${file_roots[$index]}")"
+done
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 service_dir="${HOME}/.config/systemd/user"
 service_file="${service_dir}/codex-mobile-pwa.service"
@@ -62,6 +71,15 @@ WORKSPACE="$workspace" PORT="$port" CODEX="$codex_path" node -e '
     Array.isArray(existing.hosts) && existing.hosts.length
       ? existing.hosts
       : [host];
+  const requestedFileRoots = process.argv.slice(2);
+  const fileRoots =
+    Array.isArray(existing.fileRoots) && existing.fileRoots.length
+      ? [...existing.fileRoots]
+      : [];
+  for (const root of requestedFileRoots) {
+    if (!fileRoots.includes(root)) fileRoots.push(root);
+  }
+  if (!fileRoots.length) fileRoots.push(os.homedir());
   const value = {
     port: Number(process.env.PORT),
     workspace: process.env.WORKSPACE,
@@ -69,11 +87,12 @@ WORKSPACE="$workspace" PORT="$port" CODEX="$codex_path" node -e '
     host,
     hosts,
     codexPath: process.env.CODEX,
-    maxUploadBytes: 25 * 1024 * 1024,
-    maxAttachments: 8
+    fileRoots,
+    maxUploadBytes: Number(existing.maxUploadBytes) || 25 * 1024 * 1024,
+    maxAttachments: Number(existing.maxAttachments) || 8
   };
   fs.writeFileSync(process.argv[1], JSON.stringify(value, null, 2) + "\n", { mode: 0o600 });
-' "$install_dir/config.json"
+' "$install_dir/config.json" "${file_roots[@]}"
 
 cat > "$service_file" <<EOF
 [Unit]

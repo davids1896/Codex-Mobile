@@ -1,6 +1,6 @@
 # 故障排查
 
-## 网页中没有出现其他目录或主机
+## 网页中没有出现其他目录、历史任务或主机
 
 确认正在编辑的是安装目录内的私有配置，而不是仓库中的 `config.example.json`。
 
@@ -24,12 +24,70 @@ powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass `
 检查每个 `workspaces[].path` 都是本机存在的绝对目录；`id` 必须唯一，并且只能包含字母、数字、
 点、下划线和连字符。其他主机的 `hosts[].url` 必须是 Tailscale Serve 提供的 HTTPS 地址。
 
+固定目录只用于新建任务。其他目录来自本机 Codex 的未归档历史任务：打开“历史任务”后等待目录发现完成，
+再使用关键词和目录筛选。如果桌面 Codex 与 Gateway 不是同一个系统用户，或使用了不同的 `CODEX_HOME`，
+它们不会看到同一套任务。
+
 修改前端后仍看不到选择器时，完全关闭再打开 PWA；必要时删除该 Tailnet 域名的网站缓存。
+
+## 回复只显示 Markdown 文本，图片不显示
+
+先确认手机已加载新前端：粗体应被渲染，而不是显示字面量 `**text**`。如果仍是旧界面，按本文末尾的
+Service Worker 步骤清缓存。
+
+图片路径还必须满足：
+
+- 是主机上的绝对路径。
+- 文件实际存在，且内容确实是 JPEG、PNG、GIF、WebP 或 AVIF。
+- 真实路径位于 `workspaces`、已发现任务目录或 `fileRoots` 中。
+
+检查私有配置中的图片根目录：
+
+```bash
+node -e 'const c=require(process.argv[1]); console.log(c.fileRoots)' \
+  ~/.local/share/codex-mobile-pwa/config.json
+```
+
+Windows：
+
+```powershell
+(Get-Content -Raw "$env:LOCALAPPDATA\CodexMobilePwa\app\config.json" |
+  ConvertFrom-Json).fileRoots
+```
+
+不要为了显示图片把根目录设置成 `/` 或磁盘根目录；优先使用当前用户主目录。
 
 ## 选择另一台主机后要求重新输入配对码
 
 这是正常行为。每台主机使用独立域名、Cookie secret 和配对码。首次访问每个主机需要分别配对，
 之后浏览器会保存各自的 30 天会话 Cookie。
+
+## `.ts.net` 地址通过代理访问时 TLS 失败
+
+Tailnet 域名和 Tailscale IP 应直接进入 Tailscale，不应发送给普通 HTTP/Clash 上游代理。命令行出现
+`SSL/TLS connection failed`、`unexpected eof` 或 HTTP 状态 `000` 时，先绕过代理复测：
+
+```bash
+curl --noproxy '*' -I https://your-host.your-tailnet.ts.net
+```
+
+如果绕过后正常，把 `.ts.net`、`localhost` 和 `127.0.0.1` 加入本机代理的绕过列表。不要因此把
+Tailscale Serve 改成公网 Funnel。
+
+## code-server 无法打开
+
+依次检查：
+
+```bash
+systemctl --user status code-server.service --no-pager
+ss -lnt | grep '127.0.0.1:8080'
+curl -I http://127.0.0.1:8080/login
+tailscale serve status
+```
+
+`8080` 必须只监听回环地址，`8443` 必须显示 `tailnet only`。若本机页面正常而 HTTPS 不通，检查手机
+Tailscale 是否在线，以及 Clash 是否错误代理了 `.ts.net`。详细安装和密码查询见
+[手机远程文件编辑器](MOBILE-EDITOR.zh-CN.md)。
 
 ## 无法切换工作目录
 

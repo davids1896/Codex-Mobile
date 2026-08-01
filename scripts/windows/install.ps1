@@ -5,7 +5,8 @@ param(
     [string]$InstallDir = (Join-Path $env:LOCALAPPDATA "CodexMobilePwa\app"),
     [string]$DataDir = (Join-Path $env:LOCALAPPDATA "CodexMobilePwa\data"),
     [int]$Port = 8787,
-    [string]$CodexPath
+    [string]$CodexPath,
+    [string[]]$FileRoot = @()
 )
 
 $ErrorActionPreference = "Stop"
@@ -70,6 +71,32 @@ $hosts = @(
         $host
     }
 )
+$fileRoots = @(
+    if ($existingConfig -and $existingConfig.fileRoots.Count -gt 0) {
+        $existingConfig.fileRoots
+    }
+)
+foreach ($root in $FileRoot) {
+    $resolvedRoot = (Resolve-Path -LiteralPath $root).Path
+    if (-not ($fileRoots | Where-Object {
+        [string]::Equals([string]$_, $resolvedRoot, [StringComparison]::OrdinalIgnoreCase)
+    })) {
+        $fileRoots += $resolvedRoot
+    }
+}
+if ($fileRoots.Count -eq 0) {
+    $fileRoots = @((Resolve-Path -LiteralPath $env:USERPROFILE).Path)
+}
+$maxUploadBytes = if ($existingConfig -and $existingConfig.maxUploadBytes) {
+    [int64]$existingConfig.maxUploadBytes
+} else {
+    26214400
+}
+$maxAttachments = if ($existingConfig -and $existingConfig.maxAttachments) {
+    [int]$existingConfig.maxAttachments
+} else {
+    8
+}
 $config = [ordered]@{
     port = $Port
     workspace = $workspacePath
@@ -77,8 +104,9 @@ $config = [ordered]@{
     host = $host
     hosts = $hosts
     codexPath = $CodexPath
-    maxUploadBytes = 26214400
-    maxAttachments = 8
+    fileRoots = $fileRoots
+    maxUploadBytes = $maxUploadBytes
+    maxAttachments = $maxAttachments
 } | ConvertTo-Json -Depth 6
 $runtime = [ordered]@{
     dataDir = [IO.Path]::GetFullPath($DataDir)

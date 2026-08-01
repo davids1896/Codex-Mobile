@@ -10,14 +10,17 @@
 
 - 新建、恢复和停止 Codex 任务
 - 实时显示回复、命令执行和文件变更
+- 安全渲染 Markdown、代码块、链接和主机本地图片
 - 在手机端处理命令审批与问题输入
 - 每条消息默认上传 8 个、单个最大 25 MB 的图片或附件
-- 在配置白名单内切换多个工作目录，最近选择会在 Gateway 重启后恢复
+- 自动发现本机 Codex 历史任务及其工作目录，并支持关键词搜索和目录筛选
+- 在配置目录与历史任务目录之间切换；最近的固定目录选择会在 Gateway 重启后恢复
 - 在同一个网页界面中切换多台独立主机
 - 工作区模式与完全访问模式切换
 - 配对码登录、30 天签名会话
 - Windows 计划任务与 Linux systemd user service 自启动
 - Tailscale Serve 提供 Tailnet 内 HTTPS，不开放公网端口
+- 可选部署 Tailnet-only `code-server`，在手机查看和编辑该用户可访问的全部远程文件
 
 ## 架构
 
@@ -25,6 +28,7 @@
 flowchart LR
     P["手机 Safari / PWA"] -->|"Tailnet HTTPS"| T["Tailscale Serve"]
     T -->|"127.0.0.1:8787"| G["Node.js Gateway"]
+    T -->|"可选 127.0.0.1:8080"| E["code-server"]
     G -->|"JSON-RPC over stdio"| C["Codex app-server"]
     C --> W["白名单工作区"]
     C --> A["主机上的 API Key / provider 配置"]
@@ -62,12 +66,13 @@ Set-ExecutionPolicy -Scope Process Bypass -Force
 所需的配对码。然后在手机 Tailscale 中连接同一 Tailnet，打开安装器显示的 HTTPS
 地址，并将页面添加到主屏幕。
 
-安装后编辑私有 `config.json` 即可增加 `workspaces` 与 `hosts`。完整格式和多主机同步步骤见
+安装后编辑私有 `config.json` 即可增加 `workspaces`、`hosts` 与可显示图片的 `fileRoots`。完整格式和多主机同步步骤见
 [详细部署教程](docs/DEPLOYMENT.zh-CN.md#6-配置多个工作目录与主机)。
 
 ## 文档
 
 - [详细部署教程](docs/DEPLOYMENT.zh-CN.md)
+- [手机远程文件编辑器](docs/MOBILE-EDITOR.zh-CN.md)
 - [架构与数据流](docs/ARCHITECTURE.md)
 - [故障排查](docs/TROUBLESHOOTING.zh-CN.md)
 - [安全策略](SECURITY.md)

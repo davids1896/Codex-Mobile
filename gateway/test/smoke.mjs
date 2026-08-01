@@ -10,6 +10,7 @@ import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { safeImageUrl } from "../public/markdown.js";
 
 const gatewayDir = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const serverPath = join(gatewayDir, "server.mjs");
@@ -20,6 +21,16 @@ const workspaceTwo = join(testRoot, "workspace-two");
 mkdirSync(dataDir);
 mkdirSync(workspaceOne);
 mkdirSync(workspaceTwo);
+const imagePath = join(workspaceTwo, "sample.png");
+const textPath = join(workspaceTwo, "sample.txt");
+const outsideImagePath = join(testRoot, "outside.png");
+const tinyPng = Buffer.from(
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+  "base64",
+);
+writeFileSync(imagePath, tinyPng);
+writeFileSync(outsideImagePath, tinyPng);
+writeFileSync(textPath, "not an image");
 
 async function availablePort() {
   return new Promise((resolvePort, reject) => {
@@ -101,8 +112,15 @@ async function stopGateway() {
   gateway.kill();
   await Promise.race([
     new Promise((resolveExit) => gateway.once("exit", resolveExit)),
-    new Promise((resolveWait) => setTimeout(resolveWait, 2_000)),
+    new Promise((resolveWait) => setTimeout(resolveWait, 5_000)),
   ]);
+  if (gateway.exitCode === null) {
+    gateway.kill("SIGKILL");
+    await Promise.race([
+      new Promise((resolveExit) => gateway.once("exit", resolveExit)),
+      new Promise((resolveWait) => setTimeout(resolveWait, 2_000)),
+    ]);
+  }
 }
 
 try {
@@ -145,6 +163,30 @@ try {
     throw new Error("workspace selection was not persisted");
   }
 
+  const unauthenticatedImage = await fetch(
+    `${baseUrl}/api/local-file?path=${encodeURIComponent(imagePath)}`,
+  );
+  if (unauthenticatedImage.status !== 401) {
+    throw new Error("local image route did not require authentication");
+  }
+  const validImage = await fetch(
+    `${baseUrl}/api/local-file?path=${encodeURIComponent(imagePath)}`,
+    { headers: authenticatedHeaders },
+  );
+  if (!validImage.ok || validImage.headers.get("content-type") !== "image/png") {
+    throw new Error("allowed local image was not served");
+  }
+  const textResponse = await fetch(
+    `${baseUrl}/api/local-file?path=${encodeURIComponent(textPath)}`,
+    { headers: authenticatedHeaders },
+  );
+  if (textResponse.status !== 415) throw new Error("non-image local file was not rejected");
+  const outsideResponse = await fetch(
+    `${baseUrl}/api/local-file?path=${encodeURIComponent(outsideImagePath)}`,
+    { headers: authenticatedHeaders },
+  );
+  if (outsideResponse.status !== 403) throw new Error("outside-root image was not rejected");
+
   await waitFor(async () => {
     const state = (await request(baseUrl, "/api/state", {
       headers: authenticatedHeaders,
@@ -162,6 +204,29 @@ try {
     throw new Error("new thread did not use the active workspace");
   }
 
+  const directories = (await request(baseUrl, "/api/directories", {
+    headers: authenticatedHeaders,
+  })).body;
+  if (!directories.workspaces.some((entry) => entry.path === workspaceTwo)) {
+    throw new Error("thread directory discovery omitted the active workspace");
+  }
+  const listed = (await request(baseUrl, "/api/threads", {
+    headers: authenticatedHeaders,
+  })).body;
+  if (!Array.isArray(listed.threads) || !Array.isArray(listed.workspaces)) {
+    throw new Error("global task listing shape is incorrect");
+  }
+  if (listed.threads.some((entry) => !entry.cwd)) {
+    throw new Error("task listing omitted cwd metadata");
+  }
+
+  if (!safeImageUrl("/home/example/image.png").startsWith("/api/local-file?path=")) {
+    throw new Error("Linux Markdown image path was not rewritten");
+  }
+  if (safeImageUrl("javascript:alert(1)") !== "") {
+    throw new Error("unsafe Markdown image protocol was accepted");
+  }
+
   console.log(JSON.stringify({
     ok: true,
     hostCount: publicConfig.hosts.length,
@@ -170,11 +235,14 @@ try {
     activePath: basename(switched.workspace),
     codexConnected: true,
     threadCreated: true,
+    localImageProtected: true,
+    discoveredWorkspaceCount: directories.workspaces.length,
+    listedThreadCount: listed.threads.length,
   }, null, 2));
 } catch (error) {
   console.error(gatewayOutput.trim());
   throw error;
 } finally {
   await stopGateway();
-  rmSync(testRoot, { recursive: true, force: true });
+  rmSync(testRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
 }
