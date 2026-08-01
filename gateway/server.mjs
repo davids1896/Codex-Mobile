@@ -8,6 +8,7 @@ import {
   existsSync,
   mkdirSync,
   openSync,
+  readdirSync,
   readFileSync,
   readSync,
   realpathSync,
@@ -150,6 +151,9 @@ const logFile = join(dataDir, "gateway.log");
 const uploadDir = join(dataDir, "uploads");
 const maxUploadBytes = Number(config.maxUploadBytes) || 25 * 1024 * 1024;
 const maxAttachments = Number(config.maxAttachments) || 8;
+const historySessionsDir =
+  process.env.CODEX_MOBILE_HISTORY_DIR ||
+  join(process.env.CODEX_HOME || join(homedir(), ".codex"), "sessions");
 mkdirSync(dataDir, { recursive: true });
 mkdirSync(uploadDir, { recursive: true });
 const activeWorkspaceFile = join(dataDir, "active-workspace.txt");
@@ -192,6 +196,48 @@ const cookieSecret = ensureFile("cookie-secret.txt", () => randomBytes(32).toStr
 
 function log(message) {
   appendFileSync(logFile, `${new Date().toISOString()} ${message}\n`);
+}
+
+function historyFiles(directory) {
+  if (!existsSync(directory)) return [];
+  const files = [];
+  const pending = [directory];
+  while (pending.length) {
+    const current = pending.pop();
+    let entries;
+    try {
+      entries = readdirSync(current, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      const path = join(current, entry.name);
+      if (entry.isDirectory()) pending.push(path);
+      else if (entry.isFile() && entry.name.endsWith(".jsonl")) files.push(path);
+    }
+  }
+  return files;
+}
+
+function historyThreadId(file) {
+  return basename(file).match(/([0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})\.jsonl$/i)?.[1] || "";
+}
+
+function historyMessageText(payload) {
+  if (!payload || typeof payload !== "object") return "";
+  if (
+    payload.type === "message" &&
+    ["user", "assistant"].includes(payload.role) &&
+    Array.isArray(payload.content)
+  ) {
+    return payload.content.map((entry) =>
+      typeof entry === "string" ? entry : String(entry?.text || ""),
+    ).join("\n");
+  }
+  if (["user_message", "agent_message"].includes(payload.type)) {
+    return String(payload.message || "");
+  }
+  return "";
 }
 
 function json(res, status, body) {
@@ -395,6 +441,8 @@ class CodexBridge {
       source: "configured",
     }));
     this.threadIndex = new Map();
+    this.historySearchDocuments = new Map();
+    this.historySearchRefresh = null;
     const workspaceId = initialWorkspaceId();
     const workspace = this.workspaces.find((entry) => entry.id === workspaceId);
     this.state = {
@@ -475,6 +523,67 @@ class CodexBridge {
       name: basename(file),
       size: statSync(file).size,
     };
+  }
+
+  async indexHistoryFile(file, fileStat) {
+    const parts = [];
+    const lines = readline.createInterface({
+      input: createReadStream(file, { encoding: "utf8" }),
+      crlfDelay: Infinity,
+    });
+    for await (const line of lines) {
+      if (!line.trim()) continue;
+      try {
+        const event = JSON.parse(line);
+        if (!["response_item", "event_msg"].includes(event.type)) continue;
+        const text = historyMessageText(event.payload);
+        if (text) parts.push(text);
+      } catch {}
+    }
+    return {
+      mtimeMs: fileStat.mtimeMs,
+      size: fileStat.size,
+      threadId: historyThreadId(file),
+      text: parts.join("\n").toLowerCase(),
+    };
+  }
+
+  async refreshHistorySearchDocuments() {
+    if (this.historySearchRefresh) return this.historySearchRefresh;
+    this.historySearchRefresh = (async () => {
+      const files = historyFiles(historySessionsDir);
+      const currentFiles = new Set(files);
+      for (const file of this.historySearchDocuments.keys()) {
+        if (!currentFiles.has(file)) this.historySearchDocuments.delete(file);
+      }
+      for (const file of files) {
+        let fileStat;
+        try {
+          fileStat = statSync(file);
+        } catch {
+          continue;
+        }
+        const cached = this.historySearchDocuments.get(file);
+        if (cached?.mtimeMs === fileStat.mtimeMs && cached?.size === fileStat.size) continue;
+        const indexed = await this.indexHistoryFile(file, fileStat);
+        if (indexed.threadId) this.historySearchDocuments.set(file, indexed);
+      }
+    })();
+    try {
+      await this.historySearchRefresh;
+    } finally {
+      this.historySearchRefresh = null;
+    }
+  }
+
+  async matchingHistoryThreadIds(query) {
+    await this.refreshHistorySearchDocuments();
+    const needle = String(query || "").toLowerCase();
+    const ids = new Set();
+    for (const document of this.historySearchDocuments.values()) {
+      if (document.text.includes(needle)) ids.add(document.threadId);
+    }
+    return ids;
   }
 
   publish() {
@@ -802,17 +911,15 @@ class CodexBridge {
 
   async listThreads({ query = "", cursor = "", cwd = "" } = {}) {
     await this.start();
+    const normalizedQuery = String(query || "").trim().slice(0, 160);
+    const normalizedCursor = String(cursor || "").trim();
+    const normalizedCwd = String(cwd || "").trim();
     const params = {
-      limit: 30,
+      limit: normalizedQuery ? 100 : 30,
       archived: false,
       sortKey: "updated_at",
       sortDirection: "desc",
     };
-    const normalizedQuery = String(query || "").trim().slice(0, 160);
-    const normalizedCursor = String(cursor || "").trim();
-    const normalizedCwd = String(cwd || "").trim();
-    if (normalizedQuery) params.searchTerm = normalizedQuery;
-    if (normalizedCursor) params.cursor = normalizedCursor;
     if (normalizedCwd) {
       const known = this.workspaces.find(
         (entry) => pathKey(entry.path) === pathKey(normalizedCwd),
@@ -820,8 +927,7 @@ class CodexBridge {
       if (!known) throw new HttpError(400, "Unknown task directory");
       params.cwd = known.path;
     }
-    const result = await this.request("thread/list", params);
-    const threads = result.data.map((thread) => {
+    const summarize = (thread) => {
       const workspace = this.registerWorkspace(thread.cwd);
       const summary = {
         id: thread.id,
@@ -833,10 +939,46 @@ class CodexBridge {
       };
       this.threadIndex.set(thread.id, summary);
       return summary;
-    });
+    };
+    if (!normalizedQuery) {
+      if (normalizedCursor) params.cursor = normalizedCursor;
+      const result = await this.request("thread/list", params);
+      return {
+        threads: result.data.map(summarize),
+        nextCursor: result.nextCursor || null,
+        workspaces: this.workspaces,
+      };
+    }
+
+    const matchingIds = await this.matchingHistoryThreadIds(normalizedQuery);
+    const needle = normalizedQuery.toLowerCase();
+    const matches = [];
+    let appServerCursor = "";
+    let page = 0;
+    do {
+      const result = await this.request("thread/list", {
+        ...params,
+        ...(appServerCursor ? { cursor: appServerCursor } : {}),
+      });
+      for (const thread of result.data) {
+        const metadata = [thread.name, thread.preview, thread.cwd]
+          .map((value) => String(value || "").toLowerCase())
+          .join("\n");
+        if (matchingIds.has(thread.id) || metadata.includes(needle)) {
+          matches.push(summarize(thread));
+        }
+      }
+      appServerCursor = result.nextCursor || "";
+      page += 1;
+    } while (appServerCursor && page < 20);
+
+    const offsetMatch = normalizedCursor.match(/^search:(\d+)$/);
+    const offset = offsetMatch ? Number(offsetMatch[1]) : 0;
+    const threads = matches.slice(offset, offset + 30);
+    const nextOffset = offset + threads.length;
     return {
       threads,
-      nextCursor: result.nextCursor || null,
+      nextCursor: nextOffset < matches.length ? `search:${nextOffset}` : null,
       workspaces: this.workspaces,
     };
   }

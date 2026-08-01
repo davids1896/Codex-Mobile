@@ -16,9 +16,11 @@ const gatewayDir = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const serverPath = join(gatewayDir, "server.mjs");
 const testRoot = mkdtempSync(join(tmpdir(), "codex-mobile-smoke-"));
 const dataDir = join(testRoot, "data");
+const historyDir = join(testRoot, "sessions");
 const workspaceOne = join(testRoot, "workspace-one");
 const workspaceTwo = join(testRoot, "workspace-two");
 mkdirSync(dataDir);
+mkdirSync(historyDir);
 mkdirSync(workspaceOne);
 mkdirSync(workspaceTwo);
 const imagePath = join(workspaceTwo, "sample.png");
@@ -95,6 +97,7 @@ function startGateway() {
       ...process.env,
       CODEX_MOBILE_CONFIG: configPath,
       CODEX_MOBILE_DATA_DIR: dataDir,
+      CODEX_MOBILE_HISTORY_DIR: historyDir,
     },
     stdio: ["ignore", "pipe", "pipe"],
     windowsHide: true,
@@ -219,6 +222,28 @@ try {
   if (listed.threads.some((entry) => !entry.cwd)) {
     throw new Error("task listing omitted cwd metadata");
   }
+  const searchableThread = listed.threads[0];
+  if (!searchableThread) throw new Error("task listing was empty");
+  writeFileSync(
+    join(historyDir, `rollout-test-${searchableThread.id}.jsonl`),
+    `${JSON.stringify({
+      type: "session_meta",
+      payload: { id: searchableThread.id, cwd: searchableThread.cwd },
+    })}\n${JSON.stringify({
+      type: "response_item",
+      payload: {
+        type: "message",
+        role: "user",
+        content: [{ type: "input_text", text: "DEPTH-CAMERA-ONLY-IN-BODY" }],
+      },
+    })}\n`,
+  );
+  const searched = (await request(baseUrl, "/api/threads?query=depth-camera-only-in-body", {
+    headers: authenticatedHeaders,
+  })).body;
+  if (!searched.threads.some((entry) => entry.id === searchableThread.id)) {
+    throw new Error("full-text task search omitted a message-body match");
+  }
 
   if (!safeImageUrl("/home/example/image.png").startsWith("/api/local-file?path=")) {
     throw new Error("Linux Markdown image path was not rewritten");
@@ -235,6 +260,7 @@ try {
     activePath: basename(switched.workspace),
     codexConnected: true,
     threadCreated: true,
+    fullTextSearch: true,
     localImageProtected: true,
     discoveredWorkspaceCount: directories.workspaces.length,
     listedThreadCount: listed.threads.length,
