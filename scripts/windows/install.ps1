@@ -14,6 +14,15 @@ $repoRoot = Resolve-Path (Join-Path $PSScriptRoot "..\..")
 $gatewaySource = Join-Path $repoRoot "gateway"
 $workspacePath = (Resolve-Path -LiteralPath $Workspace).Path
 $node = Get-Command node.exe -ErrorAction Stop
+$nodeMajor = [int](& $node.Source -p "process.versions.node.split('.')[0]")
+if ($nodeMajor -lt 20) {
+    throw "Node.js 20 or newer is required; found $(& $node.Source --version)"
+}
+$nodeDir = Split-Path -Parent $node.Source
+$npmPath = Join-Path $nodeDir "npm.cmd"
+if (-not (Test-Path -LiteralPath $npmPath)) {
+    $npmPath = (Get-Command npm.cmd -ErrorAction Stop).Source
+}
 if (-not $CodexPath) {
     $CodexPath = (Get-Command codex.cmd -ErrorAction Stop).Source
 } else {
@@ -31,6 +40,15 @@ Copy-Item -LiteralPath (Join-Path $PSScriptRoot "start.ps1") -Destination $Insta
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot "stop.ps1") -Destination $InstallDir -Force
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot "verify.ps1") -Destination $InstallDir -Force
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot "rotate-pairing-code.ps1") -Destination $InstallDir -Force
+Push-Location $InstallDir
+try {
+    $previousPath = $env:Path
+    $env:Path = "$nodeDir;$previousPath"
+    & $npmPath ci --omit=dev --no-audit --no-fund
+} finally {
+    $env:Path = $previousPath
+    Pop-Location
+}
 
 $utf8 = New-Object System.Text.UTF8Encoding($false)
 $existingConfig = $null
@@ -97,6 +115,18 @@ $maxAttachments = if ($existingConfig -and $existingConfig.maxAttachments) {
 } else {
     8
 }
+$defaultPermissionMode = if (
+    $existingConfig -and [string]$existingConfig.defaultPermissionMode -eq "full"
+) {
+    "full"
+} else {
+    "workspace"
+}
+$webPushSubject = if ($existingConfig -and $existingConfig.webPushSubject) {
+    [string]$existingConfig.webPushSubject
+} else {
+    ""
+}
 $config = [ordered]@{
     port = $Port
     workspace = $workspacePath
@@ -104,6 +134,8 @@ $config = [ordered]@{
     host = $host
     hosts = $hosts
     codexPath = $CodexPath
+    defaultPermissionMode = $defaultPermissionMode
+    webPushSubject = $webPushSubject
     fileRoots = $fileRoots
     maxUploadBytes = $maxUploadBytes
     maxAttachments = $maxAttachments

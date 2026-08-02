@@ -17,10 +17,16 @@
 - 在配置目录与历史任务目录之间切换；最近的固定目录选择会在 Gateway 重启后恢复
 - 在同一个网页界面中切换多台独立主机
 - 工作区模式与完全访问模式切换
+- 同一台主机可同时运行多个任务，切换任务不会停止后台工作
+- 任务运行中可继续发送消息，使用 Codex 原生 steering 引导当前轮次
+- 可在私有配置中选择默认进入工作区或完全访问模式
+- 任务完成后通过 Web Push 通知手机
+- 向上查看长对话时显示“返回底部”按钮
 - 配对码登录、30 天签名会话
 - Windows 计划任务与 Linux systemd user service 自启动
 - Tailscale Serve 提供 Tailnet 内 HTTPS，不开放公网端口
 - 可选部署 Tailnet-only `code-server`，在手机查看和编辑该用户可访问的全部远程文件
+- 可在 Codex Mobile 顶部点击“代码编辑器”，切换到当前主机的 Tailnet-only `code-server`
 
 ## 架构
 
@@ -66,7 +72,8 @@ Set-ExecutionPolicy -Scope Process Bypass -Force
 所需的配对码。然后在手机 Tailscale 中连接同一 Tailnet，打开安装器显示的 HTTPS
 地址，并将页面添加到主屏幕。
 
-安装后编辑私有 `config.json` 即可增加 `workspaces`、`hosts` 与可显示图片的 `fileRoots`。完整格式和多主机同步步骤见
+安装后编辑私有 `config.json` 即可增加 `workspaces`、带可选 `editorUrl` 的 `hosts`、
+可显示图片的 `fileRoots` 与默认权限模式。完整格式和多主机同步步骤见
 [详细部署教程](docs/DEPLOYMENT.zh-CN.md#6-配置多个工作目录与主机)。
 
 ## 文档
@@ -83,7 +90,9 @@ Set-ExecutionPolicy -Scope Process Bypass -Force
 - 不要使用 Tailscale Funnel，不要做公网端口映射。
 - 不要把 API Key、`auth.json`、配对码或 Cookie 密钥提交到 Git。
 - “完全访问”会关闭逐项审批并允许 Codex 以当前系统用户权限访问整台主机。
-- 网关重启后权限会自动恢复为“工作区”。
+- 公开安装默认使用“工作区”；如需默认完全访问，只在主机私有配置中设置
+  `"defaultPermissionMode": "full"`。
+- Web Push 订阅和 VAPID 私钥只保存在每台主机的私有数据目录。
 - 怀疑配对码或手机会话泄漏时，应立即运行配对码轮换脚本。
 
 ## License

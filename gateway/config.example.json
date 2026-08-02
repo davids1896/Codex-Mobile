@@ -16,21 +16,26 @@
   "host": {
     "id": "this-host",
     "name": "This host",
-    "url": "https://this-host.your-tailnet.ts.net"
+    "url": "https://this-host.your-tailnet.ts.net",
+    "editorUrl": "https://this-host.your-tailnet.ts.net:8443"
   },
   "hosts": [
     {
       "id": "this-host",
       "name": "This host",
-      "url": "https://this-host.your-tailnet.ts.net"
+      "url": "https://this-host.your-tailnet.ts.net",
+      "editorUrl": "https://this-host.your-tailnet.ts.net:8443"
     },
     {
       "id": "other-host",
       "name": "Other host",
-      "url": "https://other-host.your-tailnet.ts.net"
+      "url": "https://other-host.your-tailnet.ts.net",
+      "editorUrl": "https://other-host.your-tailnet.ts.net:8443"
     }
   ],
   "codexPath": "/absolute/path/to/codex",
+  "defaultPermissionMode": "workspace",
+  "webPushSubject": "mailto:you@example.com",
   "fileRoots": [
     "/home/your-user"
   ],

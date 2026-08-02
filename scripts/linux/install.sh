@@ -23,7 +23,27 @@ done
 [[ -n "$workspace" ]] || { echo "--workspace is required" >&2; exit 2; }
 workspace="$(realpath "$workspace")"
 [[ -d "$workspace" ]] || { echo "Workspace not found: $workspace" >&2; exit 1; }
-node_path="$(command -v node)"
+node_path="${NODE_PATH:-$(command -v node || true)}"
+if [[ -z "$node_path" ]] || ! "$node_path" -e 'process.exit(Number(process.versions.node.split(".")[0]) >= 20 ? 0 : 1)' 2>/dev/null; then
+  existing_node_path="$(
+    systemctl --user show codex-mobile-pwa.service -p ExecStart --value 2>/dev/null |
+      sed -n 's/.*path=\([^ ;]*\).*/\1/p'
+  )"
+  if [[ -x "$existing_node_path" ]]; then
+    node_path="$existing_node_path"
+  fi
+fi
+[[ -x "$node_path" ]] || { echo "Node.js executable not found" >&2; exit 1; }
+node_dir="$(dirname "$node_path")"
+npm_path="$node_dir/npm"
+[[ -x "$npm_path" ]] || npm_path="$(command -v npm)"
+"$node_path" -e '
+  const major = Number(process.versions.node.split(".")[0]);
+  if (major < 20) {
+    console.error(`Node.js 20 or newer is required; found ${process.version}`);
+    process.exit(1);
+  }
+'
 [[ -x "$codex_path" ]] || { echo "Codex executable not found: $codex_path" >&2; exit 1; }
 for index in "${!file_roots[@]}"; do
   [[ -d "${file_roots[$index]}" ]] || {
@@ -41,7 +61,8 @@ if [[ -f "$install_dir/config.json" ]]; then
   cp -p "$install_dir/config.json" "$install_dir/config.json.backup-$(date +%Y%m%d-%H%M%S)"
 fi
 cp -a "$repo_root/gateway/." "$install_dir/"
-WORKSPACE="$workspace" PORT="$port" CODEX="$codex_path" node -e '
+(cd "$install_dir" && PATH="$node_dir:$PATH" "$npm_path" ci --omit=dev --no-audit --no-fund)
+WORKSPACE="$workspace" PORT="$port" CODEX="$codex_path" "$node_path" -e '
   const fs = require("fs");
   const os = require("os");
   let existing = {};
@@ -87,6 +108,9 @@ WORKSPACE="$workspace" PORT="$port" CODEX="$codex_path" node -e '
     host,
     hosts,
     codexPath: process.env.CODEX,
+    defaultPermissionMode:
+      existing.defaultPermissionMode === "full" ? "full" : "workspace",
+    webPushSubject: existing.webPushSubject || "",
     fileRoots,
     maxUploadBytes: Number(existing.maxUploadBytes) || 25 * 1024 * 1024,
     maxAttachments: Number(existing.maxAttachments) || 8

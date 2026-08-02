@@ -19,6 +19,7 @@ import { homedir, hostname } from "node:os";
 import { basename, dirname, extname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import readline from "node:readline";
+import webpush from "web-push";
 
 const root = fileURLToPath(new URL(".", import.meta.url));
 const publicDir = join(root, "public");
@@ -93,6 +94,10 @@ function normalizeHosts() {
     id: normalizedId(configuredHost.id, "current"),
     name: String(configuredHost.name || hostname()).trim(),
     url: normalizeHostUrl(configuredHost.url, configuredHost.id || "current"),
+    editorUrl: normalizeHostUrl(
+      configuredHost.editorUrl,
+      `${configuredHost.id || "current"} editor`,
+    ),
   };
   const entries =
     Array.isArray(config.hosts) && config.hosts.length
@@ -107,12 +112,14 @@ function normalizeHosts() {
       id,
       name: String(entry?.name || id).trim(),
       url: normalizeHostUrl(entry?.url, id),
+      editorUrl: normalizeHostUrl(entry?.editorUrl, `${id} editor`),
     };
   });
   const existing = hosts.find((entry) => entry.id === current.id);
   if (existing) {
     existing.name = current.name || existing.name;
     existing.url = current.url || existing.url;
+    existing.editorUrl = current.editorUrl || existing.editorUrl;
   } else {
     hosts.unshift(current);
   }
@@ -140,6 +147,10 @@ function normalizeFileRoots() {
 const configuredWorkspaces = normalizeWorkspaces();
 const configuredHosts = normalizeHosts();
 const configuredFileRoots = normalizeFileRoots();
+const defaultPermissionMode =
+  String(config.defaultPermissionMode || "workspace").toLowerCase() === "full"
+    ? "full"
+    : "workspace";
 const defaultDataDir =
   process.platform === "win32"
     ? join(process.env.LOCALAPPDATA || process.env.ProgramData || "C:\\ProgramData", "CodexMobilePwa", "data")
@@ -149,6 +160,8 @@ const dataDir =
   defaultDataDir;
 const logFile = join(dataDir, "gateway.log");
 const uploadDir = join(dataDir, "uploads");
+const pushSubscriptionsFile = join(dataDir, "push-subscriptions.json");
+const vapidKeysFile = join(dataDir, "web-push-vapid.json");
 const maxUploadBytes = Number(config.maxUploadBytes) || 25 * 1024 * 1024;
 const maxAttachments = Number(config.maxAttachments) || 8;
 const historySessionsDir =
@@ -196,6 +209,125 @@ const cookieSecret = ensureFile("cookie-secret.txt", () => randomBytes(32).toStr
 
 function log(message) {
   appendFileSync(logFile, `${new Date().toISOString()} ${message}\n`);
+}
+
+function readJsonFile(file, fallback) {
+  try {
+    return JSON.parse(readFileSync(file, "utf8"));
+  } catch {
+    return fallback;
+  }
+}
+
+function normalizePushSubscription(value) {
+  const endpoint = String(value?.endpoint || "").trim();
+  const p256dh = String(value?.keys?.p256dh || "").trim();
+  const auth = String(value?.keys?.auth || "").trim();
+  if (
+    !endpoint.startsWith("https://") ||
+    endpoint.length > 4096 ||
+    !p256dh ||
+    p256dh.length > 512 ||
+    !auth ||
+    auth.length > 512
+  ) {
+    throw new HttpError(400, "Invalid push subscription");
+  }
+  return {
+    endpoint,
+    expirationTime:
+      Number.isFinite(value.expirationTime) && value.expirationTime > 0
+        ? value.expirationTime
+        : null,
+    keys: { p256dh, auth },
+  };
+}
+
+function pushSubscriptionId(subscription) {
+  return createHash("sha256").update(subscription.endpoint).digest("hex");
+}
+
+function loadPushSubscriptions() {
+  const entries = readJsonFile(pushSubscriptionsFile, []);
+  if (!Array.isArray(entries)) return [];
+  return entries.flatMap((entry) => {
+    try {
+      const subscription = normalizePushSubscription(entry);
+      return [{ ...subscription, id: pushSubscriptionId(subscription) }];
+    } catch {
+      return [];
+    }
+  });
+}
+
+function savePushSubscriptions(entries) {
+  writeFileSync(
+    pushSubscriptionsFile,
+    `${JSON.stringify(entries.map(({ id, ...entry }) => entry), null, 2)}\n`,
+    { encoding: "utf8", mode: 0o600 },
+  );
+}
+
+function ensureVapidKeys() {
+  const existing = readJsonFile(vapidKeysFile, null);
+  if (existing?.publicKey && existing?.privateKey) return existing;
+  const generated = webpush.generateVAPIDKeys();
+  writeFileSync(vapidKeysFile, `${JSON.stringify(generated, null, 2)}\n`, {
+    encoding: "utf8",
+    mode: 0o600,
+  });
+  return generated;
+}
+
+const vapidKeys = ensureVapidKeys();
+const vapidSubject =
+  String(config.webPushSubject || "").trim() ||
+  (configuredHosts.current.url.startsWith("https://")
+    ? configuredHosts.current.url
+    : "mailto:codex-mobile@example.invalid");
+webpush.setVapidDetails(vapidSubject, vapidKeys.publicKey, vapidKeys.privateKey);
+let pushSubscriptions = loadPushSubscriptions();
+
+function registerPushSubscription(value) {
+  const subscription = normalizePushSubscription(value);
+  const id = pushSubscriptionId(subscription);
+  const existingIndex = pushSubscriptions.findIndex((entry) => entry.id === id);
+  const stored = { ...subscription, id };
+  if (existingIndex >= 0) pushSubscriptions[existingIndex] = stored;
+  else pushSubscriptions.push(stored);
+  savePushSubscriptions(pushSubscriptions);
+  return { ok: true };
+}
+
+function removePushSubscription(endpoint) {
+  const normalizedEndpoint = String(endpoint || "").trim();
+  const remaining = pushSubscriptions.filter((entry) => entry.endpoint !== normalizedEndpoint);
+  const removed = remaining.length !== pushSubscriptions.length;
+  pushSubscriptions = remaining;
+  if (removed) savePushSubscriptions(pushSubscriptions);
+  return { ok: true };
+}
+
+async function sendCompletionNotifications(task) {
+  if (!pushSubscriptions.length) return;
+  const payload = JSON.stringify({
+    title: "Codex 任务已完成",
+    body: `${configuredHosts.current.name}：${task.threadTitle || "任务已完成"}`,
+    url: task.threadId ? `/?thread=${encodeURIComponent(task.threadId)}` : "/",
+  });
+  const expired = new Set();
+  await Promise.all(pushSubscriptions.map(async (subscription) => {
+    try {
+      await webpush.sendNotification(subscription, payload, { TTL: 300, urgency: "normal" });
+    } catch (error) {
+      if ([404, 410].includes(error.statusCode)) expired.add(subscription.id);
+      else log(`push notification failed: ${error.message}`);
+    }
+  }));
+  if (expired.size) {
+    pushSubscriptions = pushSubscriptions.filter((entry) => !expired.has(entry.id));
+    savePushSubscriptions(pushSubscriptions);
+  }
 }
 
 function historyFiles(directory) {
@@ -443,34 +575,104 @@ class CodexBridge {
     this.threadIndex = new Map();
     this.historySearchDocuments = new Map();
     this.historySearchRefresh = null;
+    this.taskStates = new Map();
+    this.activeThreadId = null;
     const workspaceId = initialWorkspaceId();
     const workspace = this.workspaces.find((entry) => entry.id === workspaceId);
+    this.draftState = this.createTaskState({
+      workspace,
+      permissionMode: defaultPermissionMode,
+    });
     this.state = {
       connected: false,
-      workspaceId,
-      workspace: workspace.path,
-      workspaceName: workspace.name,
       workspaces: this.workspaces,
       host: configuredHosts.current,
       hosts: configuredHosts.hosts,
       limits: { maxAttachments, maxUploadBytes },
-      permissionMode: "workspace",
-      threadId: null,
-      threadTitle: "New task",
-      busy: false,
-      turnId: null,
-      messages: [],
-      pendingActions: [],
       lastError: null,
     };
   }
 
-  snapshot() {
-    return { ...this.state, pendingActions: [...this.pendingActions.values()] };
+  createTaskState({
+    threadId = null,
+    threadTitle = "New task",
+    workspace,
+    permissionMode = defaultPermissionMode,
+    busy = false,
+    turnId = null,
+    messages = [],
+  }) {
+    return {
+      workspaceId: workspace.id,
+      workspace: workspace.path,
+      workspaceName: workspace.name,
+      permissionMode,
+      threadId,
+      threadTitle,
+      busy,
+      turnId,
+      messages,
+      lastError: null,
+    };
   }
 
-  currentWorkspace() {
-    return this.workspaces.find((entry) => entry.id === this.state.workspaceId);
+  activeTask() {
+    return this.activeThreadId
+      ? this.taskStates.get(this.activeThreadId) || this.draftState
+      : this.draftState;
+  }
+
+  taskForThread(threadId) {
+    const normalizedThreadId = String(threadId || "");
+    if (!normalizedThreadId) return null;
+    let task = this.taskStates.get(normalizedThreadId);
+    if (task) return task;
+    const summary = this.threadIndex.get(normalizedThreadId);
+    const workspace =
+      this.registerWorkspace(summary?.cwd) ||
+      this.currentWorkspace();
+    task = this.createTaskState({
+      threadId: normalizedThreadId,
+      threadTitle: summary?.title || "Codex task",
+      workspace,
+    });
+    this.taskStates.set(normalizedThreadId, task);
+    return task;
+  }
+
+  activateTask(task) {
+    if (task.threadId) {
+      this.taskStates.set(task.threadId, task);
+      this.activeThreadId = task.threadId;
+    } else {
+      this.draftState = task;
+      this.activeThreadId = null;
+    }
+  }
+
+  snapshot() {
+    const activeTask = this.activeTask();
+    const runningThreads = [...this.taskStates.values()]
+      .filter((task) => task.busy)
+      .map((task) => ({
+        id: task.threadId,
+        title: task.threadTitle,
+        workspace: task.workspace,
+        active: task.threadId === this.activeThreadId,
+      }));
+    return {
+      ...this.state,
+      ...activeTask,
+      lastError: activeTask.lastError || this.state.lastError,
+      pendingActions: [...this.pendingActions.values()]
+        .filter((action) => action.threadId === activeTask.threadId),
+      runningTaskCount: runningThreads.length,
+      runningThreads,
+    };
+  }
+
+  currentWorkspace(task = this.activeTask()) {
+    return this.workspaces.find((entry) => entry.id === task.workspaceId);
   }
 
   registerWorkspace(path, name = "") {
@@ -637,9 +839,13 @@ class CodexBridge {
         }
         this.pendingRpc.clear();
         this.state.connected = false;
-        this.state.busy = false;
-        this.state.turnId = null;
         this.state.lastError = `Codex app-server exited (${code})`;
+        for (const task of this.taskStates.values()) {
+          task.busy = false;
+          task.turnId = null;
+          task.lastError = this.state.lastError;
+        }
+        this.draftState.lastError = this.state.lastError;
         this.ready = null;
         this.publish();
       });
@@ -685,10 +891,14 @@ class CodexBridge {
     }
 
     if (message.id !== undefined && message.method) {
+      const threadId =
+        String(message.params?.threadId || "") ||
+        this.activeTask().threadId;
       const action = {
         requestId: message.id,
         method: message.method,
         params: message.params,
+        threadId,
       };
       this.pendingActions.set(String(message.id), action);
       this.publish();
@@ -696,20 +906,24 @@ class CodexBridge {
     }
 
     const params = message.params || {};
+    const task =
+      this.taskForThread(params.threadId) ||
+      this.activeTask();
     if (message.method === "turn/started") {
-      this.state.busy = true;
-      this.state.turnId = params.turn?.id || null;
+      task.busy = true;
+      task.turnId = params.turn?.id || null;
+      task.lastError = null;
     } else if (message.method === "item/agentMessage/delta") {
-      let item = this.state.messages.find((entry) => entry.id === params.itemId);
+      let item = task.messages.find((entry) => entry.id === params.itemId);
       if (!item) {
         item = { id: params.itemId, role: "assistant", text: "" };
-        this.state.messages.push(item);
+        task.messages.push(item);
       }
       item.text += params.delta;
     } else if (message.method === "item/started") {
       const item = params.item;
       if (item?.type === "commandExecution") {
-        this.state.messages.push({
+        task.messages.push({
           id: item.id,
           role: "activity",
           text: `$ ${item.command}`,
@@ -719,17 +933,17 @@ class CodexBridge {
     } else if (message.method === "item/completed") {
       const item = params.item;
       if (item?.type === "agentMessage") {
-        const existing = this.state.messages.find((entry) => entry.id === item.id);
+        const existing = task.messages.find((entry) => entry.id === item.id);
         if (existing) existing.text = item.text;
-        else this.state.messages.push({ id: item.id, role: "assistant", text: item.text });
+        else task.messages.push({ id: item.id, role: "assistant", text: item.text });
       } else if (item?.type === "commandExecution") {
-        const existing = this.state.messages.find((entry) => entry.id === item.id);
+        const existing = task.messages.find((entry) => entry.id === item.id);
         if (existing) {
           existing.status = item.status;
           if (item.aggregatedOutput) existing.output = item.aggregatedOutput.slice(-4000);
         }
       } else if (item?.type === "fileChange") {
-        this.state.messages.push({
+        task.messages.push({
           id: item.id,
           role: "activity",
           text: `File changes: ${item.changes.length}`,
@@ -737,13 +951,18 @@ class CodexBridge {
         });
       }
     } else if (message.method === "turn/completed") {
-      this.state.busy = false;
-      this.state.turnId = null;
+      task.busy = false;
+      task.turnId = null;
+      if (params.turn?.status === "completed") {
+        sendCompletionNotifications(task).catch((error) => {
+          log(`completion notification failed: ${error.message}`);
+        });
+      }
     } else if (message.method === "error") {
-      this.state.lastError = params.error?.message || "Codex turn failed";
-      this.state.busy = Boolean(params.willRetry);
+      task.lastError = params.error?.message || "Codex turn failed";
+      task.busy = Boolean(params.willRetry);
     } else if (message.method === "warning") {
-      this.state.lastError = params.message || "Codex warning";
+      task.lastError = params.message || "Codex warning";
     }
     this.publish();
   }
@@ -791,8 +1010,12 @@ class CodexBridge {
     return messages;
   }
 
-  permissionParams(forTurn = false, workspacePath = this.currentWorkspace().path) {
-    if (this.state.permissionMode === "full") {
+  permissionParams(
+    forTurn = false,
+    workspacePath = this.currentWorkspace().path,
+    permissionMode = this.activeTask().permissionMode,
+  ) {
+    if (permissionMode === "full") {
       return forTurn
         ? {
             approvalPolicy: "never",
@@ -826,11 +1049,12 @@ class CodexBridge {
     if (!["workspace", "full"].includes(mode)) {
       throw new HttpError(400, "Unknown permission mode");
     }
-    if (this.state.busy) {
+    const task = this.activeTask();
+    if (task.busy) {
       throw new HttpError(409, "Wait for the current turn to finish before changing permissions");
     }
-    this.state.permissionMode = mode;
-    this.state.lastError = null;
+    task.permissionMode = mode;
+    task.lastError = null;
     this.publish();
     return this.snapshot();
   }
@@ -838,23 +1062,19 @@ class CodexBridge {
   setWorkspace(workspaceId) {
     const workspace = this.workspaces.find((entry) => entry.id === workspaceId);
     if (!workspace) throw new HttpError(400, "Unknown workspace");
-    if (this.state.busy || this.pendingActions.size || activeUploads) {
+    if (activeUploads) {
       throw new HttpError(
         409,
-        "Wait for the current turn, approval, and uploads to finish before changing workspace",
+        "Wait for uploads to finish before changing workspace",
       );
     }
-    if (workspace.id === this.state.workspaceId) return this.snapshot();
+    const activeTask = this.activeTask();
+    if (!activeTask.threadId && workspace.id === activeTask.workspaceId) return this.snapshot();
 
-    this.state.workspaceId = workspace.id;
-    this.state.workspace = workspace.path;
-    this.state.workspaceName = workspace.name;
-    this.state.permissionMode = "workspace";
-    this.state.threadId = null;
-    this.state.threadTitle = "New task";
-    this.state.turnId = null;
-    this.state.messages = [];
-    this.state.lastError = null;
+    this.activateTask(this.createTaskState({
+      workspace,
+      permissionMode: defaultPermissionMode,
+    }));
     if (workspace.source === "configured") persistWorkspaceId(workspace.id);
     this.publish();
     return this.snapshot();
@@ -862,27 +1082,38 @@ class CodexBridge {
 
   async newThread() {
     await this.start();
+    if (activeUploads) {
+      throw new HttpError(409, "Wait for uploads to finish before creating another task");
+    }
+    const sourceTask = this.activeTask();
+    const workspace = this.currentWorkspace(sourceTask);
+    const permissionMode = sourceTask.permissionMode;
     const result = await this.request("thread/start", {
-      cwd: this.currentWorkspace().path,
-      ...this.permissionParams(),
+      cwd: workspace.path,
+      ...this.permissionParams(false, workspace.path, permissionMode),
       ephemeral: false,
     });
-    this.state.threadId = result.thread.id;
-    this.state.threadTitle = "New task";
-    this.state.messages = [];
-    this.state.busy = false;
-    this.state.lastError = null;
+    const task = this.createTaskState({
+      threadId: result.thread.id,
+      threadTitle: result.thread.name || result.thread.preview || "New task",
+      workspace,
+      permissionMode,
+    });
+    this.activateTask(task);
     this.publish();
     return this.snapshot();
   }
 
   async resume(threadId) {
     await this.start();
-    if (this.state.busy || this.pendingActions.size || activeUploads) {
-      throw new HttpError(
-        409,
-        "Wait for the current turn, approval, and uploads to finish before resuming another task",
-      );
+    if (activeUploads) {
+      throw new HttpError(409, "Wait for uploads to finish before switching tasks");
+    }
+    const existing = this.taskStates.get(String(threadId || ""));
+    if (existing) {
+      this.activateTask(existing);
+      this.publish();
+      return this.snapshot();
     }
     const readResult = await this.request("thread/read", {
       threadId,
@@ -891,20 +1122,22 @@ class CodexBridge {
     const thread = readResult.thread;
     const workspace = this.registerWorkspace(thread.cwd);
     if (!workspace) throw new HttpError(409, "The task working directory is unavailable");
+    const permissionMode = defaultPermissionMode;
     const result = await this.request("thread/resume", {
       threadId,
       cwd: workspace.path,
-      ...this.permissionParams(false, workspace.path),
+      ...this.permissionParams(false, workspace.path, permissionMode),
     });
-    this.state.workspaceId = workspace.id;
-    this.state.workspace = workspace.path;
-    this.state.workspaceName = workspace.name;
-    this.state.permissionMode = "workspace";
-    this.state.threadId = result.thread.id;
-    this.state.threadTitle = result.thread.name || result.thread.preview || "Codex task";
-    this.state.messages = this.loadMessages(result.thread);
-    this.state.busy = result.thread.status?.type === "active";
-    this.state.lastError = null;
+    const task = this.createTaskState({
+      threadId: result.thread.id,
+      threadTitle: result.thread.name || result.thread.preview || "Codex task",
+      workspace,
+      permissionMode,
+      messages: this.loadMessages(result.thread),
+      busy: result.thread.status?.type === "active",
+      turnId: result.thread.turns?.findLast?.((turn) => turn.status === "inProgress")?.id || null,
+    });
+    this.activateTask(task);
     this.publish();
     return this.snapshot();
   }
@@ -936,6 +1169,7 @@ class CodexBridge {
         cwd: workspace?.path || thread.cwd,
         updatedAt: thread.updatedAt,
         status: thread.status,
+        gatewayBusy: Boolean(this.taskStates.get(thread.id)?.busy),
       };
       this.threadIndex.set(thread.id, summary);
       return summary;
@@ -1014,8 +1248,8 @@ class CodexBridge {
 
   async sendMessage(text, attachmentIds = []) {
     await this.start();
-    if (!this.state.threadId) await this.newThread();
-    if (this.state.busy) throw new Error("A turn is already running");
+    if (!this.activeTask().threadId) await this.newThread();
+    const task = this.activeTask();
     if (!Array.isArray(attachmentIds) || attachmentIds.length > maxAttachments) {
       throw new HttpError(400, `A message can include up to ${maxAttachments} attachments`);
     }
@@ -1041,28 +1275,57 @@ class CodexBridge {
       }
     }
 
-    this.state.messages.push({
+    const userMessage = {
       id: `user-${Date.now()}`,
       role: "user",
       text: displayText || `已发送 ${attachments.length} 个附件`,
       attachments: attachments.map(({ file, storedName, ...attachment }) => attachment),
-    });
-    this.state.busy = true;
+    };
+    task.messages.push(userMessage);
+    const steering = task.busy;
+    if (!steering) task.busy = true;
+    task.lastError = null;
     this.publish();
-    const result = await this.request("turn/start", {
-      threadId: this.state.threadId,
-      input,
-      ...this.permissionParams(true),
-    });
-    this.state.turnId = result.turn.id;
-    this.publish();
+    try {
+      if (steering) {
+        if (!task.turnId) {
+          throw new HttpError(409, "The active turn is not ready to accept guidance yet");
+        }
+        const result = await this.request("turn/steer", {
+          threadId: task.threadId,
+          expectedTurnId: task.turnId,
+          input,
+          clientUserMessageId: userMessage.id,
+        });
+        task.turnId = result.turnId;
+      } else {
+        const result = await this.request("turn/start", {
+          threadId: task.threadId,
+          input,
+          ...this.permissionParams(true, task.workspace, task.permissionMode),
+        });
+        task.turnId = result.turn.id;
+      }
+      this.publish();
+    } catch (error) {
+      const messageIndex = task.messages.indexOf(userMessage);
+      if (messageIndex >= 0) task.messages.splice(messageIndex, 1);
+      if (!steering) {
+        task.busy = false;
+        task.turnId = null;
+      }
+      task.lastError = error.message;
+      this.publish();
+      throw error;
+    }
   }
 
   async interrupt() {
-    if (!this.state.threadId || !this.state.turnId) return;
+    const task = this.activeTask();
+    if (!task.threadId || !task.turnId) return;
     await this.request("turn/interrupt", {
-      threadId: this.state.threadId,
-      turnId: this.state.turnId,
+      threadId: task.threadId,
+      turnId: task.turnId,
     });
   }
 
@@ -1131,6 +1394,20 @@ const server = createServer(async (req, res) => {
 
     if (req.method === "GET" && url.pathname === "/api/state") {
       return json(res, 200, bridge.snapshot());
+    }
+    if (req.method === "GET" && url.pathname === "/api/notifications") {
+      return json(res, 200, {
+        publicKey: vapidKeys.publicKey,
+        subscriptionCount: pushSubscriptions.length,
+      });
+    }
+    if (req.method === "POST" && url.pathname === "/api/notifications/subscribe") {
+      const body = await bodyJson(req);
+      return json(res, 201, registerPushSubscription(body.subscription));
+    }
+    if (req.method === "DELETE" && url.pathname === "/api/notifications/subscribe") {
+      const body = await bodyJson(req);
+      return json(res, 200, removePushSubscription(body.endpoint));
     }
     if (req.method === "POST" && url.pathname === "/api/uploads") {
       activeUploads += 1;
@@ -1244,9 +1521,13 @@ const server = createServer(async (req, res) => {
       return res.end("Not found");
     }
     const data = readFileSync(file);
+    const cacheControl =
+      assetPath === "sw.js" || extname(file) === ".html"
+        ? "no-cache"
+        : "public, max-age=300";
     res.writeHead(200, {
       "Content-Type": mime[extname(file)] || "application/octet-stream",
-      "Cache-Control": assetPath === "sw.js" ? "no-cache" : "public, max-age=300",
+      "Cache-Control": cacheControl,
       "Content-Length": data.length,
     });
     res.end(data);

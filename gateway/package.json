@@ -9,5 +9,8 @@
     "start": "node server.mjs",
     "check": "node --check server.mjs && node --check public/app.js && node --check public/markdown.js && node --check public/sw.js && node --check test/smoke.mjs",
     "test:smoke": "node test/smoke.mjs"
+  },
+  "dependencies": {
+    "web-push": "3.6.7"
   }
 }

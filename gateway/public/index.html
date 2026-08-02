@@ -9,7 +9,7 @@
     <meta name="apple-mobile-web-app-title" content="Codex Mobile">
     <link rel="manifest" href="/manifest.webmanifest">
     <link rel="apple-touch-icon" href="/icons/icon-192.png">
-    <link rel="stylesheet" href="/app.css?v=8">
+    <link rel="stylesheet" href="/app.css?v=10">
     <title>Codex Mobile</title>
   </head>
   <body>
@@ -38,6 +38,10 @@
             <div><span id="status-dot" class="status-dot"></span><strong>Codex Mobile</strong></div>
             <small id="thread-title">新任务</small>
           </div>
+          <button id="notification-button" class="icon-button notification-button" type="button"
+                  title="开启任务完成通知" aria-label="开启任务完成通知" aria-pressed="false">
+            <span class="bell-icon" aria-hidden="true"></span>
+          </button>
           <button id="new-button" class="icon-button" title="新建任务" aria-label="新建任务">+</button>
         </div>
         <div class="connection-controls">
@@ -49,6 +53,7 @@
             <span>目录</span>
             <select id="workspace-select" aria-label="切换工作目录"></select>
           </label>
+          <button id="editor-button" class="editor-button" type="button" hidden>代码编辑器</button>
         </div>
         <div class="permission-switch" role="group" aria-label="访问权限">
           <button type="button" data-permission="workspace">工作区</button>
@@ -57,6 +62,10 @@
       </header>
 
       <main id="messages" aria-live="polite"></main>
+      <button id="scroll-bottom-button" class="scroll-bottom-button" type="button"
+              title="返回底部" aria-label="返回底部" hidden>
+        <span aria-hidden="true">&#8595;</span>
+      </button>
 
       <aside id="approval" class="approval" hidden></aside>
 
@@ -98,6 +107,6 @@
       <button id="threads-more" class="threads-more" type="button" hidden>加载更多</button>
     </dialog>
 
-    <script type="module" src="/app.js?v=8"></script>
+    <script type="module" src="/app.js?v=10"></script>
   </body>
 </html>

@@ -69,6 +69,15 @@ https://your-host.your-tailnet.ts.net:8443
 5. 使用“打开文件夹”选择该用户有权访问的任意目录。
 6. 可将各地址分别添加到手机主屏幕，并以主机名命名。
 
+也可以把上述地址写入该主机私有 `config.json` 的 `host.editorUrl`，并同步到 `hosts` 中对应主机：
+
+```json
+"editorUrl": "https://your-host.your-tailnet.ts.net:8443"
+```
+
+重启 Gateway 后，Codex Mobile 顶部会出现“代码编辑器”按钮。点击后在当前页面切换到 code-server；
+浏览器返回即可回到 Codex Mobile。不要在 `editorUrl` 中嵌入密码、Cookie 或其他凭据。
+
 ## 验证与维护
 
 在每台主机运行：

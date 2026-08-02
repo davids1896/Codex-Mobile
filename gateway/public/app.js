@@ -23,6 +23,9 @@ const threadDirectory = document.querySelector("#thread-directory");
 const threadsMore = document.querySelector("#threads-more");
 const hostSelect = document.querySelector("#host-select");
 const workspaceSelect = document.querySelector("#workspace-select");
+const editorButton = document.querySelector("#editor-button");
+const notificationButton = document.querySelector("#notification-button");
+const scrollBottomButton = document.querySelector("#scroll-bottom-button");
 const loginHostControl = document.querySelector("#login-host-control");
 const loginHostSelect = document.querySelector("#login-host");
 const permissionButtons = [...document.querySelectorAll("[data-permission]")];
@@ -36,6 +39,13 @@ let uploading = false;
 let publicConfig = null;
 let threadsCursor = null;
 let threadSearchTimer = null;
+let renderedThreadId;
+
+const serviceWorkerRegistration = "serviceWorker" in navigator
+  ? navigator.serviceWorker.register("/sw.js")
+    .then(() => navigator.serviceWorker.ready)
+    .catch(() => null)
+  : Promise.resolve(null);
 
 async function api(path, options = {}) {
   const headers = { ...(options.headers || {}) };
@@ -61,6 +71,91 @@ function formatSize(bytes) {
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
 
+function urlBase64ToUint8Array(value) {
+  const padding = "=".repeat((4 - (value.length % 4)) % 4);
+  const base64 = (value + padding).replaceAll("-", "+").replaceAll("_", "/");
+  const bytes = atob(base64);
+  return Uint8Array.from(bytes, (character) => character.charCodeAt(0));
+}
+
+function notificationsSupported() {
+  return "Notification" in window && "PushManager" in window && "serviceWorker" in navigator;
+}
+
+async function refreshNotificationButton(syncSubscription = false) {
+  notificationButton.classList.remove("active");
+  notificationButton.setAttribute("aria-pressed", "false");
+  if (!notificationsSupported()) {
+    notificationButton.title = "请先将网页添加到主屏幕，再开启任务完成通知";
+    notificationButton.setAttribute("aria-label", notificationButton.title);
+    return;
+  }
+  if (Notification.permission === "denied") {
+    notificationButton.title = "通知权限已被系统关闭";
+    notificationButton.setAttribute("aria-label", notificationButton.title);
+    return;
+  }
+  const registration = await serviceWorkerRegistration;
+  const subscription = await registration?.pushManager.getSubscription();
+  if (subscription && syncSubscription) {
+    await api("/api/notifications/subscribe", {
+      method: "POST",
+      body: JSON.stringify({ subscription: subscription.toJSON() }),
+    });
+  }
+  const active = Boolean(subscription);
+  notificationButton.classList.toggle("active", active);
+  notificationButton.setAttribute("aria-pressed", String(active));
+  notificationButton.title = active ? "关闭任务完成通知" : "开启任务完成通知";
+  notificationButton.setAttribute("aria-label", notificationButton.title);
+}
+
+async function toggleNotifications() {
+  if (!notificationsSupported()) {
+    alert("这台手机暂不支持网页推送。iPhone/iPad 请先把 Codex Mobile 添加到主屏幕，再从主屏幕打开。");
+    return;
+  }
+  if (Notification.permission === "denied") {
+    alert("通知权限已被系统关闭，请在系统设置中允许 Codex Mobile 发送通知。");
+    return;
+  }
+  notificationButton.disabled = true;
+  try {
+    const registration = await serviceWorkerRegistration;
+    if (!registration) throw new Error("Service Worker 尚未就绪");
+    const existing = await registration.pushManager.getSubscription();
+    if (existing) {
+      await api("/api/notifications/subscribe", {
+        method: "DELETE",
+        body: JSON.stringify({ endpoint: existing.endpoint }),
+      });
+      await existing.unsubscribe();
+    } else {
+      const permission = await Notification.requestPermission();
+      if (permission !== "granted") throw new Error("没有获得通知权限");
+      const config = await api("/api/notifications");
+      const subscription = await registration.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: urlBase64ToUint8Array(config.publicKey),
+      });
+      try {
+        await api("/api/notifications/subscribe", {
+          method: "POST",
+          body: JSON.stringify({ subscription: subscription.toJSON() }),
+        });
+      } catch (error) {
+        await subscription.unsubscribe();
+        throw error;
+      }
+    }
+    await refreshNotificationButton();
+  } catch (error) {
+    alert(`无法更新通知设置：${error.message}`);
+  } finally {
+    notificationButton.disabled = false;
+  }
+}
+
 function fillSelect(select, entries, selectedId, label) {
   const previous = select.value;
   select.replaceChildren(...entries.map((entry) => {
@@ -79,6 +174,7 @@ function renderHosts(host, hosts = []) {
   fillSelect(hostSelect, hosts, host.id, "host");
   fillSelect(loginHostSelect, hosts, host.id, "host");
   loginHostControl.hidden = hosts.length < 2;
+  editorButton.hidden = !host.editorUrl;
 }
 
 function renderWorkspaces() {
@@ -105,6 +201,19 @@ function navigateToHost(select) {
     return;
   }
   window.location.assign(target.url);
+}
+
+function navigateToEditor() {
+  const config = state || publicConfig;
+  const editorUrl = config?.host?.editorUrl;
+  if (!editorUrl) {
+    alert("这台主机尚未配置 code-server 的 Tailnet HTTPS 地址");
+    return;
+  }
+  if (state?.busy && !confirm("当前任务仍在运行。打开编辑器后任务会继续运行，确定离开吗？")) {
+    return;
+  }
+  window.location.assign(editorUrl);
 }
 
 function localImageUrl(value) {
@@ -148,7 +257,23 @@ function messageAttachments(items = []) {
   return container;
 }
 
+function distanceFromMessageBottom() {
+  return messages.scrollHeight - messages.scrollTop - messages.clientHeight;
+}
+
+function updateScrollBottomButton() {
+  const hasMessages = Boolean(state?.messages?.length);
+  scrollBottomButton.hidden = !hasMessages || distanceFromMessageBottom() < 140;
+  const composerHeight = composer.getBoundingClientRect().height;
+  const approvalHeight = approval.hidden ? 0 : approval.getBoundingClientRect().height + 8;
+  scrollBottomButton.style.bottom =
+    `${Math.ceil(composerHeight + approvalHeight + 12)}px`;
+}
+
 function renderMessages() {
+  const threadChanged = renderedThreadId !== state.threadId;
+  const shouldFollowBottom = threadChanged || distanceFromMessageBottom() < 140;
+  const previousScrollTop = messages.scrollTop;
   messages.replaceChildren();
   if (!state.messages.length) {
     const empty = document.createElement("div");
@@ -161,6 +286,8 @@ function renderMessages() {
       document.createTextNode("可以发送文字、图片或文件"),
     );
     messages.append(empty);
+    renderedThreadId = state.threadId;
+    requestAnimationFrame(updateScrollBottomButton);
     return;
   }
 
@@ -186,19 +313,29 @@ function renderMessages() {
     }
     messages.append(article);
   }
-  messages.scrollTop = messages.scrollHeight;
+  renderedThreadId = state.threadId;
+  requestAnimationFrame(() => {
+    messages.scrollTop = shouldFollowBottom ? messages.scrollHeight : previousScrollTop;
+    updateScrollBottomButton();
+  });
 }
 
 function render() {
   if (!state) return;
   statusDot.classList.toggle("online", state.connected);
-  threadTitle.textContent = state.threadTitle || "新任务";
+  const backgroundTaskCount =
+    Math.max(0, Number(state.runningTaskCount || 0) - (state.busy ? 1 : 0));
+  threadTitle.textContent = backgroundTaskCount
+    ? `${state.threadTitle || "新任务"} · 后台运行 ${backgroundTaskCount}`
+    : state.threadTitle || "新任务";
   stopButton.hidden = !state.busy;
-  input.disabled = state.busy || uploading;
-  sendButton.disabled = state.busy || uploading;
-  attachButton.disabled = state.busy || uploading;
-  workspaceSelect.disabled =
-    state.busy || uploading || Boolean(state.pendingActions?.length);
+  input.disabled = uploading;
+  input.placeholder = state.busy ? "追加消息，引导当前任务" : "给 Codex 下达任务";
+  sendButton.disabled = uploading;
+  sendButton.title = state.busy ? "追加引导" : "发送";
+  sendButton.setAttribute("aria-label", sendButton.title);
+  attachButton.disabled = uploading;
+  workspaceSelect.disabled = uploading;
   hostSelect.disabled = uploading;
   renderHosts(state.host, state.hosts);
   renderWorkspaces();
@@ -334,12 +471,25 @@ async function boot() {
     login.hidden = true;
     app.hidden = false;
     render();
+    const requestedThreadId = new URL(window.location.href).searchParams.get("thread");
+    if (requestedThreadId && requestedThreadId !== state.threadId) {
+      state = await api("/api/thread/resume", {
+        method: "POST",
+        body: JSON.stringify({ threadId: requestedThreadId }),
+      });
+      const cleanUrl = new URL(window.location.href);
+      cleanUrl.searchParams.delete("thread");
+      history.replaceState(null, "", cleanUrl);
+      render();
+    }
     connectEvents();
   } catch {
     events?.close();
     app.hidden = true;
     login.hidden = false;
+    return;
   }
+  refreshNotificationButton(true).catch(() => {});
 }
 
 async function uploadFile(file, index, total) {
@@ -459,13 +609,25 @@ permissionButtons.forEach((button) => {
 
 hostSelect.addEventListener("change", () => navigateToHost(hostSelect));
 loginHostSelect.addEventListener("change", () => navigateToHost(loginHostSelect));
+editorButton.addEventListener("click", navigateToEditor);
+notificationButton.addEventListener("click", toggleNotifications);
+messages.addEventListener("scroll", updateScrollBottomButton, { passive: true });
+scrollBottomButton.addEventListener("click", () => {
+  messages.scrollTo({ top: messages.scrollHeight, behavior: "smooth" });
+});
+window.addEventListener("resize", updateScrollBottomButton);
+if ("ResizeObserver" in window) {
+  const layoutObserver = new ResizeObserver(updateScrollBottomButton);
+  layoutObserver.observe(composer);
+  layoutObserver.observe(approval);
+}
 workspaceSelect.addEventListener("change", async () => {
   const workspaceId = workspaceSelect.value;
   if (!state || workspaceId === state.workspaceId) return;
   const target = state.workspaces?.find((entry) => entry.id === workspaceId);
   const warning = selectedFiles.length
-    ? "切换目录会清空当前任务和已选择但尚未发送的附件。确定继续吗？"
-    : "切换目录会清空当前任务，并回到工作区权限。确定继续吗？";
+    ? "切换目录会保留当前任务在后台运行，但会清空已选择且尚未发送的附件。确定继续吗？"
+    : "切换目录会保留当前任务，并打开一个使用默认权限的新任务页面。确定继续吗？";
   if (!confirm(warning)) {
     workspaceSelect.value = state.workspaceId;
     return;
@@ -491,8 +653,13 @@ workspaceSelect.addEventListener("change", async () => {
 
 stopButton.onclick = () => api("/api/interrupt", { method: "POST", body: "{}" });
 document.querySelector("#new-button").onclick = async () => {
-  if (state?.busy && !confirm("当前任务仍在运行，确定新建任务？")) return;
-  await api("/api/thread/new", { method: "POST", body: "{}" });
+  try {
+    state = await api("/api/thread/new", { method: "POST", body: "{}" });
+    render();
+    input.focus();
+  } catch (error) {
+    alert(`无法新建任务：${error.message}`);
+  }
 };
 
 function renderThreadDirectories(workspaces = []) {
@@ -523,9 +690,13 @@ function threadRow(thread) {
   path.title = thread.cwd || "";
   const detail = document.createElement("small");
   const updatedAt = Number(thread.updatedAt);
-  detail.textContent = Number.isFinite(updatedAt)
+  const updatedText = Number.isFinite(updatedAt)
     ? new Date(updatedAt * 1000).toLocaleString()
     : "";
+  detail.textContent = thread.gatewayBusy
+    ? `运行中${updatedText ? ` · ${updatedText}` : ""}`
+    : updatedText;
+  button.classList.toggle("running", Boolean(thread.gatewayBusy));
   button.append(title, path, detail);
   button.onclick = async () => {
     button.disabled = true;
@@ -606,7 +777,4 @@ document.querySelector("#close-threads").onclick = () => {
   dialog.close();
 };
 
-if ("serviceWorker" in navigator) {
-  navigator.serviceWorker.register("/sw.js").catch(() => {});
-}
 boot();

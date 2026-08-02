@@ -258,21 +258,26 @@ tailscale serve status
   "host": {
     "id": "host-a",
     "name": "Host A",
-    "url": "https://host-a.your-tailnet.ts.net"
+    "url": "https://host-a.your-tailnet.ts.net",
+    "editorUrl": "https://host-a.your-tailnet.ts.net:8443"
   },
   "hosts": [
     {
       "id": "host-a",
       "name": "Host A",
-      "url": "https://host-a.your-tailnet.ts.net"
+      "url": "https://host-a.your-tailnet.ts.net",
+      "editorUrl": "https://host-a.your-tailnet.ts.net:8443"
     },
     {
       "id": "host-b",
       "name": "Host B",
-      "url": "https://host-b.your-tailnet.ts.net"
+      "url": "https://host-b.your-tailnet.ts.net",
+      "editorUrl": "https://host-b.your-tailnet.ts.net:8443"
     }
   ],
   "codexPath": "/absolute/path/to/codex",
+  "defaultPermissionMode": "workspace",
+  "webPushSubject": "mailto:you@example.com",
   "fileRoots": [
     "/home/your-user"
   ],
@@ -282,6 +287,12 @@ tailscale serve status
 ```
 
 旧的单一 `workspace` 配置仍兼容。设置 `workspaces` 后，`workspace` 主要供旧版本和安装器兼容。
+`editorUrl` 可选；配置后，网页顶部会显示“代码编辑器”按钮，并跳转到该主机独立认证的
+Tailnet-only `code-server`。不要在 URL 中嵌入密码或其他凭据。
+`defaultPermissionMode` 可设为 `full` 或 `workspace`，未配置时默认是 `workspace`。
+如果设为 `full`，只是以运行 Gateway 的当前系统用户权限工作，不等于 root 或管理员。
+`webPushSubject` 建议使用管理员邮箱形式的 `mailto:` 地址；VAPID 私钥和手机推送订阅
+会自动生成并保存在私有数据目录，不应提交 Git。
 网页会在启动后通过 Codex `thread/list` 发现历史任务目录；恢复任务时再通过 `thread/read` 使用该任务记录的真实
 `cwd`，不能由手机伪造任意路径。重新运行安装器会保留已有的 `workspaces`、`host`、`hosts` 和 `fileRoots`。
 
@@ -317,7 +328,7 @@ powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "$app\start.ps1"
 4. 恢复一个非固定目录中的任务，确认顶部目录与真实 cwd 同步改变。
 5. 切换目录，确认消息视图清空，空白页显示新绝对路径。
 6. 新建任务并让 Codex 输出当前目录，确认 cwd 已改变。
-7. 切换到“完全访问”，再切目录，确认权限自动恢复为“工作区”。
+7. 修改权限后再切目录，确认权限恢复为 `defaultPermissionMode` 配置值。
 8. 切换另一台主机，首次输入该主机自己的配对码。
 9. 返回原主机，确认原域名的登录会话仍然有效。
 10. 重启 Gateway，确认最近一次选择的固定目录仍被恢复。
@@ -327,8 +338,15 @@ powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "$app\start.ps1"
 1. 打开手机 Tailscale。
 2. 打开 Codex Mobile PWA。
 3. 选择历史任务或点击右上角新建任务。
-4. 保持“工作区”模式完成常规开发。
-5. 需要访问工作区之外的文件时，再临时切换“完全访问”。
+4. 任务运行中可以继续发送消息，新的消息会用于引导当前轮次。
+5. 当前任务运行时可以新建或切换其他任务，原任务会继续在后台运行。
+6. 如私有配置启用了默认完全访问，确认顶部警示后按当前系统用户权限使用。
+7. 向上查看长对话后，点击右下角向下箭头返回最新消息。
+8. 点击顶部铃铛并允许通知，任务完成后即可在后台收到 Web Push。
+
+iPhone 和 iPad 需要先把网页添加到主屏幕，并从主屏幕打开 PWA，才能申请 Web Push
+权限。每个主机域名都需要单独开启一次通知。浏览器推送订阅、VAPID 私钥与配对信息
+都保存在该主机本地。
 
 附件按钮支持图片与普通文件。图片直接作为视觉输入发送；普通附件保存在主机私有
 数据目录，并将本机路径交给 Codex 读取。
@@ -354,7 +372,7 @@ powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "$app\start.ps1"
 - `danger-full-access`
 - 不再逐项请求审批
 - 仅获得运行 Gateway 的当前用户权限，不会自动获得 root/管理员权限
-- Gateway 重启后自动恢复为工作区模式
+- Gateway 启动、切换目录和恢复历史任务时使用 `defaultPermissionMode`
 
 ## 9. 轮换配对码与注销手机会话
 
@@ -436,5 +454,7 @@ Windows：
 - [ ] 普通附件可由 Codex 读取
 - [ ] 工作区审批正常
 - [ ] 完全访问二次确认正常
-- [ ] 重启后权限恢复为工作区
+- [ ] 启动和切目录后权限恢复为配置的默认模式
+- [ ] 手机允许通知后，任务完成会收到 Web Push
+- [ ] 长对话向上滚动后出现“返回底部”按钮
 - [ ] 配对码轮换后旧手机会话失效
